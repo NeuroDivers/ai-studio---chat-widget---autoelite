@@ -87,13 +87,13 @@ app.get('/api/tts/greeting', async (req, res) => {
       });
     }
 
-    // Dynamic generation fallback with high-quality Aoede voice
+    // Dynamic generation fallback with crisp Kore voice
     const text = lang === 'en'
-      ? "Hello! I can help you find an available vehicle at Automobile Lambert."
-      : "Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.";
+      ? "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?"
+      : "Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?";
 
     const ttsRes = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-preview-tts',
+      model: 'gemini-3.8-flash-tts',
       contents: [{
         role: 'user',
         parts: [{ text }]
@@ -101,7 +101,7 @@ app.get('/api/tts/greeting', async (req, res) => {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
         }
       }
     });
@@ -133,7 +133,9 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (clientWs: WebSocket, request: any) => {
   const reqUrl = new URL(request?.url || '', 'http://localhost');
   let currentLanguage: 'fr' | 'en' = reqUrl.searchParams.get('lang') === 'en' ? 'en' : 'fr';
-  console.log(`Client connected to Gemini Live voice bridge (default language: ${currentLanguage})`);
+  const requestedVoice = reqUrl.searchParams.get('voice');
+  const chosenVoice = requestedVoice === 'Puck' ? 'Puck' : 'Kore';
+  console.log(`Client connected to Gemini Live voice bridge (lang: ${currentLanguage}, voice: ${chosenVoice})`);
 
   let liveSession: any = null;
   let isClosed = false;
@@ -200,8 +202,8 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
       } else if (data.type === 'introduce') {
         const targetLang = data.lang === 'en' || currentLanguage === 'en' ? 'en' : 'fr';
         const greetingPrompt = targetLang === 'en'
-          ? "Say warmly and naturally in English: 'Hello! I can help you find an available vehicle at Automobile Lambert.'"
-          : "Dis chaleureusement et naturellement en français québécois : 'Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.'";
+          ? "Say in clear, natural North American English at a normal conversational pace: 'Hello! I can help you find an available vehicle at Automobile Lambert.'"
+          : "Dis d'une voix naturelle, chaleureuse et fluide en français québécois : 'Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.'";
         try {
           liveSession.sendClientContent({
             turns: [
@@ -251,23 +253,24 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
     console.log('Client WebSocket closed');
   });
 
-  // Connect to Gemini Live asynchronously with studio Aoede voice
+  // Connect to Gemini Live asynchronously with clean Kore voice
   ai.live.connect({
     model: 'gemini-3.8-live',
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: {
         voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Aoede' },
+          prebuiltVoiceConfig: { voiceName: chosenVoice },
         },
       },
       systemInstruction: `You are the bilingual (French and English) virtual voice advisor for Automobile Lambert, a certified car dealership in Laval, Quebec.
 Contact: 1250 boul. Curé-Labelle, Laval, QC. Phone: (450) 555-0199. Hours: 9:00 AM to 6:00 PM Monday through Friday, 10:00 AM to 4:00 PM Saturday.
 
-Bilingual Rules:
-1. Default preferred language for this session is ${currentLanguage === 'en' ? 'English' : 'French'}.
-2. Always answer seamlessly in the language the customer speaks (fluent Canadian French or clear English).
-3. Keep spoken replies concise, pleasant, and natural (1 to 2 sentences).
+VOICE, SPEED & ACCENT RULES:
+1. When speaking English: Speak with a native, standard North American English accent. NEVER use a fake, exaggerated, or forced French accent. Speak clearly, warmly, and naturally.
+2. When speaking French: Speak in clear, fluent, authentic Canadian French (Québec).
+3. Speed & Delivery: Speak at a normal, lively conversational pace. Never drag out syllables or speak slowly. Keep spoken answers concise (1 to 2 sentences max) so turns are snappy and responsive.
+4. Default preferred language for this session is ${currentLanguage === 'en' ? 'English' : 'French'}. If the user speaks English, answer in English. If the user speaks French, answer in French.
 
 Available inventory:
 - 2022 Honda CR-V EX-L, VUS / SUV, AWD, automatique / automatic, essence / gas, rouge / red, 32 995 $ CAD, 41 200 km, stock L2201

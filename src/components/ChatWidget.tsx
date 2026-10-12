@@ -46,7 +46,7 @@ const STRINGS = {
   fr: {
     dealerName: 'Automobile Lambert',
     onlineAdvisor: 'Conseiller virtuel en ligne',
-    greetingText: 'Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.',
+    greetingText: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?",
     listenGreeting: 'Écouter la présentation vocale',
     stopGreeting: 'Arrêter la présentation',
     listeningBadge: 'Listening...',
@@ -86,7 +86,7 @@ const STRINGS = {
   en: {
     dealerName: 'Automobile Lambert',
     onlineAdvisor: 'Virtual sales advisor online',
-    greetingText: 'Hello! I can help you find an available vehicle at Automobile Lambert.',
+    greetingText: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
     listenGreeting: 'Listen to spoken greeting',
     stopGreeting: 'Stop greeting',
     listeningBadge: 'Listening...',
@@ -148,10 +148,11 @@ export const ChatWidget: React.FC = () => {
   const [showVoicePulseOverlay, setShowVoicePulseOverlay] = useState<boolean>(false);
 
   // Diagnostic / Debugging states
+  const [selectedVoice, setSelectedVoice] = useState<'Kore' | 'Puck'>('Kore');
   const [showDebug, setShowDebug] = useState<boolean>(false);
   const [micPermissionState, setMicPermissionState] = useState<string>('unknown');
   const [webSocketStatus, setWebSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Aoede activée)');
+  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Kore HD activée)');
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestFeedback, setMicTestFeedback] = useState<string>('');
 
@@ -205,6 +206,11 @@ export const ChatWidget: React.FC = () => {
     if (newLang === language) return;
     setLanguage(newLang);
 
+    if (isPlayingIntro) {
+      audioPlaybackRef.current?.interrupt();
+      setIsPlayingIntro(false);
+    }
+
     // Update greeting message text if it hasn't been changed
     setMessages((prev) =>
       prev.map((m) =>
@@ -219,41 +225,11 @@ export const ChatWidget: React.FC = () => {
       activeSessionRef.current.setLanguage(newLang);
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
-  }, [language]);
+  }, [isPlayingIntro, language]);
 
-  // Web Speech synthesis fallback for French or English dealership greeting
-  const speakGreetingFallback = useCallback((text: string, lang: Language) => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = lang === 'en' ? 'en-US' : 'fr-CA';
-        utterance.rate = 0.95;
-        const voices = window.speechSynthesis.getVoices();
-        const preferredVoice = voices.find((v) =>
-          lang === 'en'
-            ? v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.lang === 'en-US')
-            : v.lang.startsWith('fr') || v.name.toLowerCase().includes('french')
-        );
-        if (preferredVoice) {
-          utterance.voice = preferredVoice;
-        }
-        utterance.onstart = () => setIsPlayingIntro(true);
-        utterance.onend = () => setIsPlayingIntro(false);
-        utterance.onerror = () => setIsPlayingIntro(false);
-        window.speechSynthesis.speak(utterance);
-      } catch {
-        setIsPlayingIntro(false);
-      }
-    }
-  }, []);
-
-  // Play high-fidelity spoken greeting introduction audio (crystal-clear Aoede voice, zero choppiness)
+  // Play high-fidelity spoken greeting introduction audio (crystal-clear Kore voice, zero static, normal pace)
   const playGreetingIntro = useCallback(async () => {
     if (isPlayingIntro) {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
       audioPlaybackRef.current?.interrupt();
       setIsPlayingIntro(false);
       return;
@@ -262,21 +238,28 @@ export const ChatWidget: React.FC = () => {
     setIsPlayingIntro(true);
     await audioPlaybackRef.current?.resume();
 
+    // 1. Play pristine studio WAV file directly (0ms latency, zero static, clear natural voice)
+    const directWavUrl = `/audio/greeting-${language}.wav`;
+    try {
+      await audioPlaybackRef.current?.playAudioUrl(directWavUrl);
+      setIsPlayingIntro(false);
+      return;
+    } catch (urlErr) {
+      console.warn('Direct static WAV play error:', urlErr);
+    }
+
+    // 2. Fallback to API route if needed
     try {
       const res = await fetch(`/api/tts/greeting?lang=${language}`);
       if (res.ok) {
         const data = await res.json();
-        // 1. Play clean static WAV file URL with 0 latency & 0 static
         if (data.wavUrl) {
           try {
             await audioPlaybackRef.current?.playAudioUrl(data.wavUrl);
             setIsPlayingIntro(false);
             return;
-          } catch (urlErr) {
-            console.warn('WAV URL direct play fallback to buffer:', urlErr);
-          }
+          } catch {}
         }
-        // 2. Play base64 WAV or PCM data
         if (data.audio) {
           await audioPlaybackRef.current?.playWavBase64(data.audio);
           setIsPlayingIntro(false);
@@ -287,9 +270,8 @@ export const ChatWidget: React.FC = () => {
       console.warn('Greeting fetch error:', err);
     }
 
-    // 3. Browser TTS fallback
-    speakGreetingFallback(STRINGS[language].greetingText, language);
-  }, [isPlayingIntro, language, speakGreetingFallback]);
+    setIsPlayingIntro(false);
+  }, [isPlayingIntro, language]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -411,12 +393,12 @@ export const ChatWidget: React.FC = () => {
       setMicPermissionState('granted');
       setLastDebugEvent('Micro actif. Enregistrement en cours...');
 
-      // 3. Connect Gemini Live Session with selected language and Aoede voice
+      // 3. Connect Gemini Live Session with selected language and Kore voice
       setWebSocketStatus('connecting');
       const session = await startVoiceSession({
         onReady: () => {
           setWebSocketStatus('connected');
-          setLastDebugEvent(`Gemini Live connecté (Aoede - ${language.toUpperCase()})`);
+          setLastDebugEvent(`Gemini Live connecté (${selectedVoice} - ${language.toUpperCase()})`);
         },
         onAudioChunk: (pcm24Base64) => {
           hasReceivedModelAudioRef.current = true;
@@ -475,7 +457,7 @@ export const ChatWidget: React.FC = () => {
           setVoiceStatus((s) => (s === 'speaking' ? 'idle' : s));
           setLastDebugEvent('WebSocket fermé');
         },
-      }, language);
+      }, language, selectedVoice);
 
       if (!isListeningRef.current) {
         session.close();
@@ -497,7 +479,7 @@ export const ChatWidget: React.FC = () => {
       setLastDebugEvent(`Erreur micro: ${err.message}`);
       console.error('Failed to start voice capture:', err);
     }
-  }, [cleanStopRecording, language]);
+  }, [cleanStopRecording, language, selectedVoice]);
 
   // Submit voice turn: Transitions from "Listening..." -> "Thinking..." -> Model reply
   const submitVoiceTurn = useCallback(() => {
@@ -806,6 +788,40 @@ export const ChatWidget: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1 text-gray-500">
+              {/* Voice Selector [ Kore | Puck ] */}
+              <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold mr-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedVoice('Kore');
+                    setLastDebugEvent('Voix: Kore (Féminine, naturelle)');
+                  }}
+                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer text-[11px] ${
+                    selectedVoice === 'Kore'
+                      ? 'bg-white text-[#991b1e] shadow-xs'
+                      : 'text-gray-500 hover:text-gray-900'
+                  }`}
+                  title="Voix Kore (Féminine, claire et naturelle)"
+                >
+                  Kore
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedVoice('Puck');
+                    setLastDebugEvent('Voix: Puck (Masculine, dynamique)');
+                  }}
+                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer text-[11px] ${
+                    selectedVoice === 'Puck'
+                      ? 'bg-white text-[#991b1e] shadow-xs'
+                      : 'text-gray-500 hover:text-gray-900'
+                  }`}
+                  title="Voix Puck (Masculine, dynamique)"
+                >
+                  Puck
+                </button>
+              </div>
+
               {/* Bilingual Language Switcher [ FR | EN ] */}
               <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold mr-1">
                 <button

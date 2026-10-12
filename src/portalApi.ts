@@ -224,11 +224,12 @@ export async function loadVehicles(searchText: string): Promise<Vehicle[]> {
  */
 export async function startVoiceSession(
   callbacks: LiveVoiceSessionCallbacks,
-  language: 'fr' | 'en' = 'fr'
+  language: 'fr' | 'en' = 'fr',
+  voice: 'Kore' | 'Puck' = 'Kore'
 ): Promise<LiveVoiceSession> {
   return new Promise((resolve, reject) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/live?lang=${language}`;
+    const wsUrl = `${protocol}//${window.location.host}/api/live?lang=${language}&voice=${voice}`;
 
     let socket: WebSocket;
     let isConnected = false;
