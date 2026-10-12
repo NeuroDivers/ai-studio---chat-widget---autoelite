@@ -2,25 +2,32 @@ import React, { useState, useEffect } from 'react';
 import { DealerInventoryPage } from './components/DealerInventoryPage';
 import { ChatWidget } from './components/ChatWidget';
 import { VehicleDetailView } from './components/VehicleDetailView';
-import { Vehicle, INVENTORY_PROTOTYPE } from './types/inventory';
-import { loadVehicles } from './portalApi';
+import { Vehicle } from './types/inventory';
+import { DealerProfile, PROTOTYPE_DEALER } from './dealerPlatform';
+import { DealerProvider } from './dealerContext';
+import { loadDealerContext, loadInventory } from './portalApi';
 
 export default function App() {
-  const [vehicles, setVehicles] = useState<Vehicle[]>(INVENTORY_PROTOTYPE);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [dealer, setDealer] = useState<DealerProfile>(PROTOTYPE_DEALER);
+  const [inventorySource, setInventorySource] = useState<'loading' | 'autoelite' | 'prototype'>('loading');
   const [selectedPageVehicle, setSelectedPageVehicle] = useState<Vehicle | null>(null);
 
   useEffect(() => {
-    // Load available inventory using portal hook
-    loadVehicles('').then((loaded) => {
-      setVehicles(loaded);
+    loadDealerContext().then(setDealer);
+    loadInventory('').then((loaded) => {
+      setVehicles(loaded.vehicles);
+      setInventorySource(loaded.source);
     });
   }, []);
 
   return (
+    <DealerProvider dealer={dealer}>
     <div className="min-h-screen bg-[#f3f4f6] relative">
-      {/* Sample Dealer Inventory Page */}
+      {/* Lambert storefront backed by the live dealer inventory */}
       <DealerInventoryPage
         vehicles={vehicles}
+        inventorySource={inventorySource}
         onSelectVehicle={(vehicle) => setSelectedPageVehicle(vehicle)}
       />
 
@@ -43,5 +50,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </DealerProvider>
   );
 }

@@ -1,5 +1,7 @@
 import React from 'react';
 import { Vehicle } from '../types/inventory';
+import { useDealer } from '../dealerContext';
+import { stockLabel } from '../dealerPlatform';
 import { formatCadPrice, formatMileage } from './VehicleCard';
 import { ArrowLeft, Gauge, Tag, Zap, Cog, Fuel, Compass, Calendar, Phone, CheckCircle2 } from 'lucide-react';
 
@@ -14,6 +16,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
   onBack,
   onRequestInfo,
 }) => {
+  const dealer = useDealer();
   return (
     <div className="absolute inset-0 bg-white z-20 flex flex-col overflow-hidden animate-in fade-in slide-in-from-right-4 duration-200">
       {/* Header bar */}
@@ -27,7 +30,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           <span>Retour aux messages</span>
         </button>
         <span className="text-xs font-medium text-gray-500">
-          Stock #{vehicle.stock_number}
+          {stockLabel(vehicle)}
         </span>
       </div>
 
@@ -60,7 +63,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
         {/* Title & Price */}
         <div className="border-b border-gray-100 pb-3">
           <div className="text-xs font-semibold tracking-wider text-gray-500 uppercase">
-            {vehicle.body_style}
+            {vehicle.body_label || vehicle.body_style}
           </div>
           <h2 className="text-xl font-bold text-gray-900 mt-0.5 leading-snug">
             {vehicle.make} {vehicle.model}{' '}
@@ -132,7 +135,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
               Numéro de stock
             </div>
             <div className="text-sm font-bold text-gray-900 mt-0.5">
-              #{vehicle.stock_number}
+              {stockLabel(vehicle)}
             </div>
           </div>
         </div>
@@ -144,7 +147,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           </h4>
           <p className="text-xs text-gray-700 leading-relaxed">
             {vehicle.description ||
-              `${vehicle.make} ${vehicle.model} ${vehicle.trim} ${vehicle.year}. Véhicule disponible immédiatement chez Automobile Lambert.`}
+              `${[vehicle.year, vehicle.make, vehicle.model, vehicle.trim].filter(Boolean).join(' ')}. Véhicule disponible immédiatement chez ${dealer.name}.`}
           </p>
         </div>
 
@@ -171,11 +174,11 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           </button>
           
           <a
-            href="tel:4505550199"
+            href={dealer.phoneHref}
             className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-semibold py-2 px-4 rounded-xl transition-colors flex items-center justify-center gap-2 text-xs"
           >
             <Phone className="w-3.5 h-3.5 text-gray-600" />
-            <span>Appeler le concessionnaire : (450) 555-0199</span>
+            <span>Appeler le concessionnaire : {dealer.phone}</span>
           </a>
         </div>
       </div>

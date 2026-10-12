@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Vehicle } from '../types/inventory';
+import { useDealer } from '../dealerContext';
 import { VehicleCard } from './VehicleCard';
 import {
   Car,
@@ -17,22 +18,28 @@ import {
 
 interface DealerInventoryPageProps {
   vehicles: Vehicle[];
+  inventorySource?: 'loading' | 'autoelite' | 'prototype';
   onSelectVehicle: (vehicle: Vehicle) => void;
   onOpenAssistantForSearch?: (term: string) => void;
 }
 
 export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
   vehicles,
+  inventorySource = 'loading',
   onSelectVehicle,
 }) => {
+  const dealer = useDealer();
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [maxPrice, setMaxPrice] = useState<number>(40000);
+  const highestPrice = vehicles.reduce((max, vehicle) => Math.max(max, vehicle.price), 20000);
+  const sliderMax = Math.ceil(highestPrice / 1000) * 1000;
+  const [maxPrice, setMaxPrice] = useState<number | null>(null);
+  const budget = maxPrice ?? sliderMax;
 
   // Filter available inventory for the main page
   const filteredVehicles = vehicles.filter((v) => {
     if (v.status !== 'available') return false;
-    if (v.price > maxPrice) return false;
+    if (v.price > budget) return false;
 
     if (activeCategory === 'vus' && v.body_style.toLowerCase() !== 'vus') return false;
     if (activeCategory === 'berline' && v.body_style.toLowerCase() !== 'berline') return false;
@@ -45,6 +52,7 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
         v.model.toLowerCase().includes(q) ||
         v.trim.toLowerCase().includes(q) ||
         v.body_style.toLowerCase().includes(q) ||
+        (v.body_label || '').toLowerCase().includes(q) ||
         v.exterior_color.toLowerCase().includes(q) ||
         v.drivetrain.toLowerCase().includes(q) ||
         v.year.toString().includes(q);
@@ -62,21 +70,21 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
           <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6">
             <span className="flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-[#991b1e]" />
-              1250 boul. Curé-Labelle, Laval, QC H7V 2V5
+              {dealer.addressLine}
             </span>
             <span className="flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-[#991b1e]" />
-              Ouvert aujourd'hui : 9h00 - 18h00
+              Aujourd'hui : {dealer.hoursToday}
             </span>
           </div>
 
           <div className="flex items-center gap-4">
             <a
-              href="tel:4505550199"
+              href={dealer.phoneHref}
               className="flex items-center gap-1.5 font-bold text-white hover:text-[#991b1e] transition-colors"
             >
               <Phone className="w-3.5 h-3.5 text-[#991b1e]" />
-              (450) 555-0199
+              {dealer.phone}
             </a>
             <span className="text-gray-500">|</span>
             <span className="text-gray-400">FR / EN</span>
@@ -93,7 +101,7 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
             </div>
             <div>
               <span className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight block leading-none">
-                Automobile Lambert
+                {dealer.name}
               </span>
               <span className="text-[11px] font-semibold text-gray-500 tracking-wider uppercase">
                 Concessionnaire Certifié • Véhicules d'occasion
@@ -178,15 +186,15 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
               </span>
               <input
                 type="range"
-                min="15000"
-                max="40000"
-                step="2500"
-                value={maxPrice}
+                min="5000"
+                max={sliderMax}
+                step={sliderMax > 50000 ? 5000 : 1000}
+                value={budget}
                 onChange={(e) => setMaxPrice(Number(e.target.value))}
                 className="w-32 accent-[#991b1e] cursor-pointer"
               />
               <span className="text-xs font-black text-[#991b1e] min-w-[70px]">
-                {maxPrice.toLocaleString('fr-CA')} $ CAD
+                {budget.toLocaleString('fr-CA')} $ CAD
               </span>
             </div>
           </div>
@@ -274,7 +282,7 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
               onClick={() => {
                 setSearchTerm('');
                 setActiveCategory('all');
-                setMaxPrice(40000);
+                setMaxPrice(null);
               }}
               className="text-xs font-bold text-[#991b1e] hover:underline"
             >
@@ -315,11 +323,19 @@ export const DealerInventoryPage: React.FC<DealerInventoryPageProps> = ({
       <footer id="contact" className="bg-white border-t border-gray-200 mt-12 py-8 px-4 sm:px-6 text-xs text-gray-500">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="text-center md:text-left">
-            <div className="font-bold text-gray-900 text-sm">Automobile Lambert</div>
-            <div>1250 boul. Curé-Labelle, Laval, QC H7V 2V5 • Téléphone : (450) 555-0199</div>
+            <div className="font-bold text-gray-900 text-sm">{dealer.name}</div>
+            <div>{dealer.addressLine} • Téléphone : {dealer.phone}</div>
           </div>
           <div className="flex items-center gap-4 text-gray-600">
-            <span>© {new Date().getFullYear()} Automobile Lambert. Tous droits réservés.</span>
+            <span>© {new Date().getFullYear()} {dealer.name}. Tous droits réservés.</span>
+            <span>•</span>
+            <span>
+              {inventorySource === 'autoelite'
+                ? 'Inventaire en direct'
+                : inventorySource === 'prototype'
+                  ? 'Inventaire de démonstration'
+                  : 'Chargement de l’inventaire'}
+            </span>
             <span>•</span>
             <span className="flex items-center gap-1 text-emerald-600 font-semibold">
               <Check className="w-3.5 h-3.5" /> Clavardage & Voix Live activés

@@ -19,6 +19,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { Vehicle } from '../types/inventory';
+import { useDealer } from '../dealerContext';
 import { VehicleCard } from './VehicleCard';
 import { VehicleDetailView } from './VehicleDetailView';
 import { VoicePulseScreen } from './VoicePulseScreen';
@@ -125,7 +126,14 @@ const STRINGS = {
   },
 };
 
+function greetingFor(lang: Language, dealerName: string): string {
+  return lang === 'en'
+    ? `Hello! I can help you find an available vehicle at ${dealerName}.`
+    : `Bonjour! Je peux vous aider à trouver un véhicule disponible chez ${dealerName}.`;
+}
+
 export const ChatWidget: React.FC = () => {
+  const dealer = useDealer();
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [language, setLanguage] = useState<Language>('fr');
@@ -172,6 +180,16 @@ export const ChatWidget: React.FC = () => {
 
   const t = STRINGS[language];
 
+  useEffect(() => {
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === 'init-greeting'
+          ? { ...message, text: greetingFor(language, dealer.name) }
+          : message
+      )
+    );
+  }, [dealer.name, language]);
+
   // Initialize audio playback and capture controllers
   useEffect(() => {
     audioPlaybackRef.current = new AudioPlaybackController();
@@ -209,7 +227,7 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === 'init-greeting'
-          ? { ...m, text: STRINGS[newLang].greetingText }
+          ? { ...m, text: greetingFor(newLang, dealer.name) }
           : m
       )
     );
@@ -219,7 +237,7 @@ export const ChatWidget: React.FC = () => {
       activeSessionRef.current.setLanguage(newLang);
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
-  }, [language]);
+  }, [dealer.name, language]);
 
   // Web Speech synthesis fallback for French or English dealership greeting
   const speakGreetingFallback = useCallback((text: string, lang: Language) => {
@@ -568,7 +586,9 @@ export const ChatWidget: React.FC = () => {
                 isThinking: false,
                 text:
                   activeModelTranscriptRef.current ||
-                  STRINGS[language].defaultAiFallback,
+                  (language === 'en'
+                    ? `Hello! I'm here to help at ${dealer.name}. Are you looking for a red SUV, a sedan, or a truck?`
+                    : `Bonjour ! Je suis à votre service chez ${dealer.name}. Cherchez-vous un VUS rouge, une berline ou un camion ?`),
               }
             : m
         )
@@ -577,7 +597,7 @@ export const ChatWidget: React.FC = () => {
     }, 4500);
 
     setLiveTranscript('');
-  }, [cleanStopRecording, language, liveTranscript, voiceStatus]);
+  }, [cleanStopRecording, dealer.name, language, liveTranscript, voiceStatus]);
 
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
@@ -664,8 +684,8 @@ export const ChatWidget: React.FC = () => {
           text:
             data.text ||
             (language === 'en'
-              ? 'Thank you for your message. An Automobile Lambert advisor can also reach you at (450) 555-0199.'
-              : 'Merci pour votre message. Un conseiller d’Automobile Lambert peut également vous joindre au (450) 555-0199.'),
+              ? `Thank you for your message. ${dealer.agentName} at ${dealer.name} can also be reached at ${dealer.phone}.`
+              : `Merci pour votre message. ${dealer.agentName} chez ${dealer.name} peut également vous joindre au ${dealer.phone}.`),
         },
       ]);
     } catch {
@@ -676,8 +696,8 @@ export const ChatWidget: React.FC = () => {
           sender: 'assistant',
           text:
             language === 'en'
-              ? 'We are located at 1250 Curé-Labelle Blvd, Laval. Please feel free to call us at (450) 555-0199.'
-              : 'Nous sommes situés au 1250 boul. Curé-Labelle. N’hésitez pas à nous appeler directement au (450) 555-0199 pour plus de renseignements.',
+              ? `We are located at ${dealer.addressLine}. Please call us at ${dealer.phone}.`
+              : `Nous sommes situés au ${dealer.addressLine}. N’hésitez pas à nous appeler au ${dealer.phone}.`,
         },
       ]);
     }
@@ -753,10 +773,10 @@ export const ChatWidget: React.FC = () => {
             playGreetingIntro();
           }}
           className="fixed bottom-5 right-5 z-50 w-14 h-14 rounded-full bg-[#991b1e] text-white shadow-2xl hover:scale-105 active:scale-95 transition-all duration-200 flex items-center justify-center group focus:outline-none focus:ring-4 focus:ring-[#991b1e]/40 cursor-pointer"
-          aria-label="Ouvrir le clavardage Automobile Lambert"
+          aria-label={`Ouvrir le clavardage ${dealer.name}`}
         >
           <MessageSquare className="w-6 h-6 group-hover:rotate-6 transition-transform" />
-          <span className="sr-only">Clavarder avec Automobile Lambert</span>
+          <span className="sr-only">Clavarder avec {dealer.name}</span>
           <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-white" />
@@ -782,7 +802,7 @@ export const ChatWidget: React.FC = () => {
               <div className="text-left">
                 <div className="flex items-center gap-2">
                   <h3 className="font-bold text-sm text-gray-900 leading-tight">
-                    {t.dealerName}
+                    {dealer.name}
                   </h3>
                   {/* Real-time Voice Status Pill in Header */}
                   {voiceStatus === 'listening' && (
@@ -800,7 +820,7 @@ export const ChatWidget: React.FC = () => {
                 </div>
                 <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1 mt-0.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                  {t.onlineAdvisor}
+                  {dealer.agentName} · {dealer.agentRole}
                 </p>
               </div>
             </div>
@@ -1021,7 +1041,10 @@ export const ChatWidget: React.FC = () => {
                   {
                     id: 'rep-' + Date.now(),
                     sender: 'assistant',
-                    text: t.testDriveBooked(v),
+                    text:
+                      language === 'en'
+                        ? `Great choice! ${dealer.name} has received your test drive request for the ${v.year} ${v.make} ${v.model}. An advisor will contact you shortly. You can also reach us at ${dealer.phone}.`
+                        : `Excellente décision ! ${dealer.name} a bien noté votre demande d'essai pour le ${v.year} ${v.make} ${v.model}. Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au ${dealer.phone}.`,
                   },
                 ]);
               }}

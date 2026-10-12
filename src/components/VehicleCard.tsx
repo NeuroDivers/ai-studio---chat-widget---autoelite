@@ -1,5 +1,6 @@
 import React from 'react';
 import { Vehicle } from '../types/inventory';
+import { stockLabel } from '../dealerPlatform';
 import { Gauge, Tag, ChevronRight } from 'lucide-react';
 
 interface VehicleCardProps {
@@ -60,11 +61,13 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({ vehicle, onSelect, com
           {/* Quick specs pill row */}
           <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs text-gray-600">
             <span className="bg-gray-100 px-2 py-0.5 rounded font-medium text-gray-800">
-              {vehicle.body_style}
+              {vehicle.body_label || vehicle.body_style}
             </span>
+            {vehicle.drivetrain && (
             <span className="bg-gray-100 px-2 py-0.5 rounded font-medium text-gray-800">
               {vehicle.drivetrain}
             </span>
+            )}
             <span className="bg-gray-100 px-2 py-0.5 rounded capitalize text-gray-700">
               {vehicle.exterior_color}
             </span>
@@ -85,7 +88,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({ vehicle, onSelect, com
               <span>•</span>
               <span className="flex items-center gap-1">
                 <Tag className="w-3 h-3 text-gray-500" />
-                #{vehicle.stock_number}
+                {stockLabel(vehicle)}
               </span>
             </div>
           </div>

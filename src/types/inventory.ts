@@ -1,10 +1,12 @@
 export interface Vehicle {
   id: number;
+  dealer_id?: number;
   year: number;
   make: string;
   model: string;
   trim: string;
   body_style: string;
+  body_label?: string;
   drivetrain: string;
   transmission: string;
   fuel_type: string;
@@ -12,9 +14,12 @@ export interface Vehicle {
   price: number;
   mileage: number;
   stock_number: string;
+  vin?: string;
   status: 'available' | 'draft' | 'pending' | 'reserved' | 'sold' | 'archived';
   photo: string;
   description?: string;
+  title?: string;
+  engine?: string;
 }
 
 export const INVENTORY_PROTOTYPE: Vehicle[] = [
