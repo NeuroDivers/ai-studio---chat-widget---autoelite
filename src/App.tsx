@@ -3,13 +3,13 @@ import { DealerInventoryPage } from './components/DealerInventoryPage';
 import { ChatWidget } from './components/ChatWidget';
 import { VehicleDetailView } from './components/VehicleDetailView';
 import { Vehicle } from './types/inventory';
-import { DealerProfile, PROTOTYPE_DEALER } from './dealerPlatform';
+import { DealerProfile } from './dealerPlatform';
 import { DealerProvider } from './dealerContext';
 import { loadDealerContext, loadInventory } from './portalApi';
 
 export default function App() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [dealer, setDealer] = useState<DealerProfile>(PROTOTYPE_DEALER);
+  const [dealer, setDealer] = useState<DealerProfile | null>(null);
   const [inventorySource, setInventorySource] = useState<'loading' | 'autoelite' | 'prototype'>('loading');
   const [selectedPageVehicle, setSelectedPageVehicle] = useState<Vehicle | null>(null);
 
@@ -20,6 +20,14 @@ export default function App() {
       setInventorySource(loaded.source);
     });
   }, []);
+
+  if (!dealer) {
+    return (
+      <div className="min-h-screen bg-[#f3f4f6] text-gray-600 grid place-items-center">
+        Chargement d'Automobile Richard Lambert…
+      </div>
+    );
+  }
 
   return (
     <DealerProvider dealer={dealer}>
