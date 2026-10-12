@@ -1,17 +1,26 @@
-const CHAT_B64 = "__CHAT_B64__";
+const CHAT_URL = "https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/aaf1ae3c06b5ecb83d484608543488ccb944889c/embed/lambert-chat.js";
 const ORIGIN = "https://automobile-richard-lambert.pages.dev";
 
-let chatBytes;
-
-function chatBody() {
-  if (!chatBytes) {
-    const binary = atob(CHAT_B64);
-    chatBytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      chatBytes[index] = binary.charCodeAt(index);
-    }
+async function chatBody() {
+  const cache = caches.default;
+  const cached = await cache.match(CHAT_URL);
+  if (cached) return cached.arrayBuffer();
+  const upstream = await fetch(CHAT_URL, {
+    headers: { "User-Agent": "lambert-studio-chat", Accept: "text/javascript" },
+  });
+  if (!upstream.ok) {
+    const detail = await upstream.text();
+    throw new Error(`chat bundle ${upstream.status} ${detail.slice(0, 180)}`);
   }
-  return chatBytes;
+  const bytes = await upstream.arrayBuffer();
+  const stored = new Response(bytes, {
+    headers: {
+      "content-type": "application/javascript; charset=utf-8",
+      "cache-control": "public, max-age=86400",
+    },
+  });
+  await cache.put(CHAT_URL, stored.clone());
+  return bytes;
 }
 
 function rewriteHtml(html) {
@@ -31,13 +40,21 @@ export default {
   async fetch(request) {
     const incoming = new URL(request.url);
     if (incoming.pathname === "/lambert-chat.js") {
-      return new Response(chatBody(), {
-        headers: {
-          "content-type": "application/javascript; charset=utf-8",
-          "cache-control": "public, max-age=300",
-          "x-content-type-options": "nosniff",
-        },
-      });
+      try {
+        const bytes = await chatBody();
+        return new Response(bytes, {
+          headers: {
+            "content-type": "application/javascript; charset=utf-8",
+            "cache-control": "public, max-age=300",
+            "x-content-type-options": "nosniff",
+          },
+        });
+      } catch (error) {
+        return new Response(String(error && error.message ? error.message : error), {
+          status: 502,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
     }
 
     const originUrl = new URL(`${incoming.pathname}${incoming.search}`, ORIGIN);
@@ -48,9 +65,7 @@ export default {
       headers,
       redirect: "manual",
     };
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      init.body = request.body;
-    }
+    if (request.method !== "GET" && request.method !== "HEAD") init.body = request.body;
     const response = await fetch(originUrl, init);
     const type = response.headers.get("content-type") || "";
     if ((request.method !== "GET" && request.method !== "HEAD") || !type.includes("text/html")) {
