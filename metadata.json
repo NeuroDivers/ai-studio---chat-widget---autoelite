@@ -1,0 +1,8 @@
+{
+  "name": "Automobile Lambert - Inventaire & Clavardage Vocal",
+  "description": "Widget de clavardage vocal mobile-first et inventaire pour Automobile Lambert.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
