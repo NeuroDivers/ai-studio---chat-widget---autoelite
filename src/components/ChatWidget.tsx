@@ -27,6 +27,8 @@ import {
   loadVehicles,
   startVoiceSession,
   isVehicleSearchQuery,
+  answerDealer,
+  directPlatform,
   LiveVoiceSession,
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
@@ -75,7 +77,7 @@ const STRINGS = {
     multipleMatch: (n: number) => `Voici les ${n} véhicules disponibles correspondant à votre recherche :`,
     noMatch: 'Aucun véhicule disponible ne correspond à votre recherche. Souhaitez-vous explorer un autre type de véhicule comme un VUS, une berline ou un camion ?',
     testDriveRequest: (v: Vehicle) => `Je souhaite réserver un essai routier pour le ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
-    testDriveBooked: (v: Vehicle) => `Excellente décision ! Notre équipe commerciale d'Automobile Lambert a bien noté votre demande pour le ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au (450) 555-0199.`,
+    testDriveBooked: (v: Vehicle, phone: string) => `Excellente décision ! Notre équipe commerciale d'Automobile Lambert a bien noté votre demande pour le ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). Un conseiller vous contactera dans les plus brefs délais.${phone ? ` Vous pouvez aussi nous appeler au ${phone}.` : ''}`,
     defaultAiFallback: "Bonjour ! Je suis à votre service chez Automobile Lambert. Cherchez-vous un VUS rouge, une berline ou un camion ?",
     micTestTitle: '🎙️ Tester micro 3s',
     micTestTesting: 'Test en cours...',
@@ -115,7 +117,7 @@ const STRINGS = {
     multipleMatch: (n: number) => `Here are the ${n} available vehicles matching your search:`,
     noMatch: 'No available vehicles match your search. Would you like to explore another vehicle type such as an SUV, sedan, or truck?',
     testDriveRequest: (v: Vehicle) => `I would like to book a test drive for the ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
-    testDriveBooked: (v: Vehicle) => `Great choice! Our sales team at Automobile Lambert has received your test drive request for the ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). An advisor will contact you shortly. You can also reach us at (450) 555-0199.`,
+    testDriveBooked: (v: Vehicle, phone: string) => `Great choice! Our sales team at Automobile Lambert has received your test drive request for the ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). An advisor will contact you shortly.${phone ? ` You can also reach us at ${phone}.` : ''}`,
     defaultAiFallback: "Hello! I'm here to help at Automobile Lambert. Are you looking for a red SUV, a sedan, or a truck?",
     micTestTitle: '🎙️ Test Mic 3s',
     micTestTesting: 'Testing...',
@@ -557,6 +559,44 @@ export const ChatWidget: React.FC = () => {
       },
     ]);
 
+    if (directPlatform) {
+      answerDealer(effectiveText, language)
+        .then((text) => {
+          activeModelTranscriptRef.current = text;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+            )
+          );
+          setVoiceStatus('idle');
+        })
+        .catch(() => {
+          const text =
+            language === 'en'
+              ? 'I could not reach the showroom just now. Please try again.'
+              : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+            )
+          );
+          setVoiceStatus('idle');
+        });
+      if (userQuery && isVehicleSearchQuery(userQuery)) {
+        loadVehicles(userQuery).then((matched) => {
+          if (matched.length > 0) {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsgId ? { ...message, vehicles: matched } : message
+              )
+            );
+          }
+        });
+      }
+      setLiveTranscript('');
+      return;
+    }
+
     // 3. Notify Gemini Live bridge of audio completion with recognized text
     if (activeSessionRef.current) {
       activeSessionRef.current.stopAudio(userQuery || undefined);
@@ -669,38 +709,23 @@ export const ChatWidget: React.FC = () => {
       return;
     }
 
+    let text: string;
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: query, lang: language }),
-      });
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text:
-            data.text ||
-            (language === 'en'
-              ? `Thank you for your message. ${dealer.agentName} at ${dealer.name} can also be reached at ${dealer.phone}.`
-              : `Merci pour votre message. ${dealer.agentName} chez ${dealer.name} peut également vous joindre au ${dealer.phone}.`),
-        },
-      ]);
+      text = await answerDealer(query, language);
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text:
-            language === 'en'
-              ? `We are located at ${dealer.addressLine}. Please call us at ${dealer.phone}.`
-              : `Nous sommes situés au ${dealer.addressLine}. N’hésitez pas à nous appeler au ${dealer.phone}.`,
-        },
-      ]);
+      text =
+        language === 'en'
+          ? 'I could not reach the showroom just now. Please try again.'
+          : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
     }
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: 'msg-a-' + Date.now(),
+        sender: 'assistant',
+        text,
+      },
+    ]);
   };
 
   // 3-second quick microphone test tool for diagnostics

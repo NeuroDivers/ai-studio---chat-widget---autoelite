@@ -1,4 +1,14 @@
-import { DealerProfile, InventoryResponse, PROTOTYPE_DEALER, prototypeInventory } from './dealerPlatform';
+import {
+  AUTOELITE_API_BASE,
+  DEFAULT_DEALER_ID,
+  DealerProfile,
+  InventoryResponse,
+  PROTOTYPE_DEALER,
+  fetchDealerProfile,
+  fetchDealerVehicles,
+  localFactualReply,
+  prototypeInventory,
+} from './dealerPlatform';
 import { Vehicle } from './types/inventory';
 
 export interface LiveVoiceSessionCallbacks {
@@ -64,8 +74,14 @@ export function isVehicleSearchQuery(query: string): boolean {
  * The server calls GET /api/ai/dealers/:id/vehicles and returns only those rows.
  * The local prototype list is used only when that platform call fails.
  */
+export const directPlatform = import.meta.env.VITE_DIRECT_PLATFORM === 'true';
+
 export async function loadInventory(searchText: string): Promise<InventoryResponse> {
   try {
+    if (directPlatform) {
+      const vehicles = await fetchDealerVehicles(searchText, DEFAULT_DEALER_ID);
+      return { vehicles, count: vehicles.length, dealerId: DEFAULT_DEALER_ID, source: 'autoelite' };
+    }
     const params = new URLSearchParams();
     if (searchText.trim()) params.set('search', searchText.trim());
     const response = await fetch(`/api/platform/vehicles${params.size ? `?${params}` : ''}`);
@@ -74,6 +90,10 @@ export async function loadInventory(searchText: string): Promise<InventoryRespon
     if (!Array.isArray(payload.vehicles)) throw new Error('Inventory payload missing vehicles');
     return payload;
   } catch (error) {
+    if (directPlatform) {
+      console.warn('Dealer inventory unavailable', error);
+      return { vehicles: [], count: 0, dealerId: DEFAULT_DEALER_ID, source: 'autoelite' };
+    }
     console.warn('Dealer inventory unavailable, using prototype list', error);
     const vehicles = prototypeInventory(searchText);
     return { vehicles, count: vehicles.length, dealerId: PROTOTYPE_DEALER.id, source: 'prototype' };
@@ -87,15 +107,55 @@ export async function loadVehicles(searchText: string): Promise<Vehicle[]> {
 
 export async function loadDealerContext(): Promise<DealerProfile> {
   try {
+    if (directPlatform) return await fetchDealerProfile(DEFAULT_DEALER_ID);
     const response = await fetch('/api/platform/context');
     if (!response.ok) throw new Error(`Dealer context ${response.status}`);
     const payload = (await response.json()) as { dealer?: DealerProfile };
     if (!payload.dealer?.name) throw new Error('Dealer context missing profile');
     return payload.dealer;
   } catch (error) {
+    if (directPlatform) throw error;
     console.warn('Dealer profile unavailable, using prototype profile', error);
     return PROTOTYPE_DEALER;
   }
+}
+
+function advisorFallback(dealer: DealerProfile, lang: 'fr' | 'en'): string {
+  return lang === 'en'
+    ? `${dealer.agentName} can help you search the inventory at ${dealer.name}. Call ${dealer.phone} or visit ${dealer.addressLine}.`
+    : `${dealer.agentName} peut vous aider à chercher dans l'inventaire de ${dealer.name}. Appelez au ${dealer.phone} ou passez au ${dealer.addressLine}.`;
+}
+
+export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<string> {
+  const dealer = await loadDealerContext();
+  const factual = localFactualReply(message, dealer, lang);
+  if (directPlatform && factual) return factual;
+
+  try {
+    if (directPlatform) {
+      const response = await fetch(`${AUTOELITE_API_BASE}/api/ai-proxy/gemini`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dealerId: DEFAULT_DEALER_ID, message, history: [], language: lang }),
+      });
+      const data = (await response.json().catch(() => ({}))) as { reply?: string; text?: string };
+      const text = (data.reply || data.text || '').trim();
+      if (response.ok && text) return text;
+      return factual || advisorFallback(dealer, lang);
+    }
+
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, lang }),
+    });
+    const data = (await response.json().catch(() => ({}))) as { text?: string };
+    if (data.text) return data.text;
+  } catch (error) {
+    console.warn('Advisor reply failed', error);
+  }
+
+  return factual || advisorFallback(dealer, lang);
 }
 
 /**

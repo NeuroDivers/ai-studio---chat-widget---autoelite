@@ -255,7 +255,7 @@ function hourValue(dealer: PublicDealer, day: (typeof DAY_KEYS)[number]): string
 }
 
 export function profileFromApi(dealer: PublicDealer, widget: WidgetConfig, dealerId: number): DealerProfile {
-  const phone = clean(dealer.contact_phone) || PROTOTYPE_DEALER.phone;
+  const phone = clean(dealer.contact_phone);
   const weekday = hourValue(dealer, 'monday');
   const saturday = hourValue(dealer, 'saturday');
   const sunday = hourValue(dealer, 'sunday');
@@ -266,14 +266,14 @@ export function profileFromApi(dealer: PublicDealer, widget: WidgetConfig, deale
 
   return {
     id: Number(dealer.id || dealerId),
-    name: clean(dealer.name) || PROTOTYPE_DEALER.name,
+    name: clean(dealer.name) || 'Automobile Lambert',
     phone,
-    phoneHref: `tel:${digitsOnly(phone)}`,
+    phoneHref: phone ? `tel:${digitsOnly(phone)}` : '',
     email: clean(dealer.contact_email),
-    addressLine: address || PROTOTYPE_DEALER.addressLine,
+    addressLine: address,
     hoursSummary: `Lun–Ven ${weekday} · Sam ${saturday} · Dim ${sunday}`,
     hoursToday: hourValue(dealer, todayKey),
-    about: clean(dealer.about_text) || PROTOTYPE_DEALER.about,
+    about: clean(dealer.about_text),
     primaryColor: clean(widget.branding_primary_color) || clean(widget.primary_color) || clean(dealer.primary_color) || '#991b1e',
     agentName: clean(widget.agent_name) || 'Sophie',
     agentRole: clean(widget.agent_role) || 'Conseillère Automobile',

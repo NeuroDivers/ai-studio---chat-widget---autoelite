@@ -3,7 +3,8 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const embed = mode === 'embed';
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -11,6 +12,22 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: embed
+      ? {
+          outDir: 'dist-embed',
+          emptyOutDir: true,
+          cssCodeSplit: false,
+          rollupOptions: {
+            input: path.resolve(__dirname, 'src/embed.tsx'),
+            output: {
+              format: 'iife',
+              inlineDynamicImports: true,
+              entryFileNames: 'lambert-chat.js',
+              assetFileNames: 'lambert-chat.[ext]',
+            },
+          },
+        }
+      : undefined,
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

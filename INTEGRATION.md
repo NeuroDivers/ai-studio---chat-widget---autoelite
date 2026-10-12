@@ -1,6 +1,6 @@
 # Lambert AI chat integration
 
-This applet is the Google AI Studio voice widget. Automobile Lambert’s public site already loads a different widget (`autoelite-widget.pages.dev`) with `AutoEliteAgent.init({ dealerId: 2 })`. That production bundle is owned by the dealer repo. This branch does not replace it.
+This applet is the Google AI Studio voice widget. Automobile Lambert’s public site was loading a different widget (`autoelite-widget.pages.dev`) with `AutoEliteAgent.init({ dealerId: 2 })`. That shared bundle stays in place for other dealers. Lambert’s own HTML is rewritten at the edge so this chat is the one visitors get.
 
 ## What is connected
 
@@ -14,10 +14,10 @@ Those calls are made by this app’s server (`/api/platform/context` and `/api/p
 
 Text answers about hours, address, and phone come from that live profile. Vehicle cards in chat come from the live search. The voice bridge still runs here, and its prompt is filled with the same inventory.
 
-## What stays on the dealer site
+## Live Lambert site
 
-`POST /api/ai-proxy/gemini` and `POST /api/ai-proxy/gemini-live?ephemeral=1` require the dealer site’s bot check. They should keep being called from `automobile-lambert.com`, where Turnstile already runs. This applet does not send a fake token and does not publish a new `widget-loader.js`.
+`dealers/automobile-richard-lambert` in NeuroDealer is the Pages source, and this environment cannot push to that private repo. The live site is updated without a new Pages deployment, so the existing Pages Functions (`/api/finance-applications` and the other `/api` routes) stay on `automobile-richard-lambert.pages.dev`.
 
-## Next step for the dealer repo
+`embed/lambert-edge.js` is a zone worker for `automobile-lambert.com` and `www.automobile-lambert.com`. It proxies every request to that Pages origin, removes the `widget-loader.js` tag and the `AutoEliteAgent.init` inline script, and serves this branch’s embed as `/lambert-chat.js`. The embed calls `api.autoelite.io` from the browser. It does not fall back to the prototype address or phone. `widget.js` on `autoelite-widget.pages.dev` is not replaced.
 
-When the other widget work is ready to take this UI, point the dealer bundle at this chat and keep minting the ephemeral Live token in the browser on the dealer origin. Leave `widget-loader.js` in place until that bundle is the one Lambert should load.
+`npm run build:embed` writes `dist-embed/lambert-chat.js`. The published copy used by the worker is `embed/lambert-chat.js`.
