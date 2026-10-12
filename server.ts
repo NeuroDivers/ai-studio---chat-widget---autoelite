@@ -134,7 +134,7 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// High-fidelity spoken greeting introduction audio endpoint (serves studio Aoede WAV with 0ms delay)
+// High-fidelity spoken greeting introduction audio endpoint (serves the studio Kore WAV)
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
@@ -150,14 +150,14 @@ app.get('/api/tts/greeting', async (req, res) => {
       });
     }
 
-    // Dynamic generation fallback with high-quality Aoede voice
+    // Dynamic generation fallback with the crisp Kore voice
     const dealer = await getDealer();
     const text = lang === 'en'
-      ? `Hello! I can help you find an available vehicle at ${dealer.name}.`
-      : `Bonjour! Je peux vous aider à trouver un véhicule disponible chez ${dealer.name}.`;
+      ? `Hello and welcome to ${dealer.name} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`
+      : `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?`;
 
     const ttsRes = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-preview-tts',
+      model: 'gemini-3.8-flash-tts',
       contents: [{
         role: 'user',
         parts: [{ text }]
@@ -165,7 +165,7 @@ app.get('/api/tts/greeting', async (req, res) => {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
         }
       }
     });
@@ -197,7 +197,9 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (clientWs: WebSocket, request: any) => {
   const reqUrl = new URL(request?.url || '', 'http://localhost');
   let currentLanguage: 'fr' | 'en' = reqUrl.searchParams.get('lang') === 'en' ? 'en' : 'fr';
-  console.log(`Client connected to Gemini Live voice bridge (default language: ${currentLanguage})`);
+  const requestedVoice = reqUrl.searchParams.get('voice');
+  const chosenVoice = requestedVoice === 'Puck' ? 'Puck' : 'Kore';
+  console.log(`Client connected to Gemini Live voice bridge (lang: ${currentLanguage}, voice: ${chosenVoice})`);
 
   let liveSession: any = null;
   let isClosed = false;
@@ -264,8 +266,8 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
       } else if (data.type === 'introduce') {
         const targetLang = data.lang === 'en' || currentLanguage === 'en' ? 'en' : 'fr';
         const greetingPrompt = targetLang === 'en'
-          ? "Say warmly and naturally in English: 'Hello! I can help you find an available vehicle at Automobile Lambert.'"
-          : "Dis chaleureusement et naturellement en français québécois : 'Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.'";
+          ? "Say in clear, natural North American English at a normal conversational pace: 'Hello and welcome to Automobile Lambert in Laval! I am your virtual advisor. How can I help you find your next vehicle today?'"
+          : "Dis d'une voix naturelle, chaleureuse et fluide en français québécois, à un rythme normal : 'Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?'";
         try {
           liveSession.sendClientContent({
             turns: [
@@ -315,7 +317,7 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
     console.log('Client WebSocket closed');
   });
 
-  // Connect to Gemini Live asynchronously with studio Aoede voice.
+  // Connect to Gemini Live asynchronously with the selected Kore or Puck voice.
   // Inventory and showroom facts come from the dealer platform for this dealer id.
   void (async () => {
     const dealer = await getDealer();
@@ -326,7 +328,7 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
       responseModalities: [Modality.AUDIO],
       speechConfig: {
         voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Aoede' },
+          prebuiltVoiceConfig: { voiceName: chosenVoice },
         },
       },
       systemInstruction: buildVoiceSystemPrompt(dealer, vehicles, currentLanguage),

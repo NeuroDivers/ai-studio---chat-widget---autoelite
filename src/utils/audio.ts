@@ -250,6 +250,7 @@ export class AudioPlaybackController {
   private nextStartTime = 0;
   private activeSources: AudioBufferSourceNode[] = [];
   private currentAudioElement: HTMLAudioElement | null = null;
+  private bufferCache: Map<string, AudioBuffer> = new Map();
 
   private getAudioContext(): AudioContext {
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
@@ -260,7 +261,7 @@ export class AudioPlaybackController {
       this.nextStartTime = this.audioCtx.currentTime;
     }
     if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
+      this.audioCtx.resume().catch(() => {});
     }
     return this.audioCtx;
   }
@@ -268,7 +269,7 @@ export class AudioPlaybackController {
   async resume(): Promise<void> {
     const ctx = this.getAudioContext();
     if (ctx.state === 'suspended') {
-      await ctx.resume();
+      await ctx.resume().catch(() => {});
     }
   }
 
@@ -285,6 +286,7 @@ export class AudioPlaybackController {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
+      // Convert 16-bit signed PCM to float32 (-1.0 to 1.0)
       const float32 = new Float32Array(samplesCount);
       const dataView = new DataView(bytes.buffer, bytes.byteOffset, samplesCount * 2);
       for (let i = 0; i < samplesCount; i++) {
@@ -292,16 +294,8 @@ export class AudioPlaybackController {
         float32[i] = val < 0 ? val / 32768 : val / 32767;
       }
 
-      // Smooth chunk boundaries (tiny 16-sample ramp) to eliminate clicks and static chop
-      const rampLen = Math.min(16, Math.floor(samplesCount / 4));
-      for (let i = 0; i < rampLen; i++) {
-        const factor = i / rampLen;
-        float32[i] *= factor;
-        float32[samplesCount - 1 - i] *= factor;
-      }
-
-      // Web Audio AudioBuffer natively resamples 24kHz to hardware output rate (44.1kHz or 48kHz)
-      const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+      // Bit-perfect 24kHz buffer resampled by browser's native hardware AudioContext
+      const audioBuffer = ctx.createBuffer(1, samplesCount, 24000);
       audioBuffer.getChannelData(0).set(float32);
 
       const sourceNode = ctx.createBufferSource();
@@ -309,9 +303,9 @@ export class AudioPlaybackController {
       sourceNode.connect(ctx.destination);
 
       const now = ctx.currentTime;
-      // 80ms jitter buffer cushion prevents packet arrival starvation
+      // Tight scheduling: if next scheduled time has lapsed, schedule with only 5ms lookahead to eliminate gaps
       if (this.nextStartTime < now) {
-        this.nextStartTime = now + 0.08;
+        this.nextStartTime = now + 0.005;
       }
 
       sourceNode.start(this.nextStartTime);
@@ -329,29 +323,107 @@ export class AudioPlaybackController {
 
   async playAudioUrl(url: string): Promise<void> {
     this.interrupt();
-    return new Promise((resolve, reject) => {
+
+    return new Promise<void>((resolve) => {
+      // 1. Primary: HTML5 Audio element - rock-solid streaming media pipeline that never gets garbage-collected or cut off
       try {
-        const audio = new Audio(url);
+        const audio = new Audio();
         this.currentAudioElement = audio;
-        audio.onended = () => {
-          this.currentAudioElement = null;
+        audio.src = url;
+        audio.preload = 'auto';
+
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          audio.removeEventListener('ended', done);
+          audio.removeEventListener('error', onError);
+          if (this.currentAudioElement === audio) {
+            this.currentAudioElement = null;
+          }
           resolve();
         };
-        audio.onerror = (e) => {
-          this.currentAudioElement = null;
-          reject(e);
+
+        const onError = async (e: any) => {
+          console.warn('HTMLAudioElement load/play error, attempting WebAudio fallback:', e);
+          if (settled) return;
+          settled = true;
+          audio.removeEventListener('ended', done);
+          audio.removeEventListener('error', onError);
+          if (this.currentAudioElement === audio) {
+            this.currentAudioElement = null;
+          }
+          await this.playWebAudioFallback(url);
+          resolve();
         };
-        audio.play().catch(reject);
+
+        audio.addEventListener('ended', done);
+        audio.addEventListener('error', onError);
+
+        audio.play().catch(async (playErr) => {
+          console.warn('HTMLAudioElement play() rejected, falling back to WebAudio:', playErr);
+          if (settled) return;
+          settled = true;
+          audio.removeEventListener('ended', done);
+          audio.removeEventListener('error', onError);
+          if (this.currentAudioElement === audio) {
+            this.currentAudioElement = null;
+          }
+          await this.playWebAudioFallback(url);
+          resolve();
+        });
       } catch (err) {
-        reject(err);
+        console.warn('HTMLAudio init error:', err);
+        this.playWebAudioFallback(url).then(resolve).catch(resolve);
       }
     });
+  }
+
+  private async playWebAudioFallback(url: string): Promise<void> {
+    try {
+      const ctx = this.getAudioContext();
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
+      }
+      let audioBuffer = this.bufferCache.get(url);
+      if (!audioBuffer) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status} fetching audio`);
+        const arrayBuf = await res.arrayBuffer();
+        audioBuffer = await ctx.decodeAudioData(arrayBuf);
+        this.bufferCache.set(url, audioBuffer);
+      }
+
+      return new Promise<void>((resolve) => {
+        const sourceNode = ctx.createBufferSource();
+        sourceNode.buffer = audioBuffer;
+        sourceNode.connect(ctx.destination);
+
+        let finished = false;
+        const onEnd = () => {
+          if (finished) return;
+          finished = true;
+          const idx = this.activeSources.indexOf(sourceNode);
+          if (idx !== -1) this.activeSources.splice(idx, 1);
+          resolve();
+        };
+
+        sourceNode.onended = onEnd;
+        sourceNode.start(0);
+        this.activeSources.push(sourceNode);
+      });
+    } catch (webAudioErr) {
+      console.warn('WebAudio decode fallback failed:', webAudioErr);
+    }
   }
 
   async playWavBase64(wavOrPcmBase64: string): Promise<void> {
     try {
       this.interrupt();
       const ctx = this.getAudioContext();
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
+      }
       const binaryString = atob(wavOrPcmBase64);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
@@ -363,15 +435,20 @@ export class AudioPlaybackController {
       const containerBuffer = ensureWavContainer(bytes, 24000, 1);
       const audioBuffer = await ctx.decodeAudioData(containerBuffer);
 
-      const sourceNode = ctx.createBufferSource();
-      sourceNode.buffer = audioBuffer;
-      sourceNode.connect(ctx.destination);
-      sourceNode.start(ctx.currentTime);
-      this.activeSources.push(sourceNode);
-      sourceNode.onended = () => {
-        const idx = this.activeSources.indexOf(sourceNode);
-        if (idx !== -1) this.activeSources.splice(idx, 1);
-      };
+      return new Promise<void>((resolve) => {
+        const sourceNode = ctx.createBufferSource();
+        sourceNode.buffer = audioBuffer;
+        sourceNode.connect(ctx.destination);
+
+        sourceNode.onended = () => {
+          const idx = this.activeSources.indexOf(sourceNode);
+          if (idx !== -1) this.activeSources.splice(idx, 1);
+          resolve();
+        };
+
+        sourceNode.start(0);
+        this.activeSources.push(sourceNode);
+      });
     } catch (err) {
       console.warn('Could not decode or play WAV audio:', err);
     }

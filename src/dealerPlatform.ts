@@ -399,9 +399,12 @@ ${inventory}`;
 export function buildVoiceSystemPrompt(dealer: DealerProfile, vehicles: Vehicle[], lang: 'fr' | 'en'): string {
   return `${buildTextSystemPrompt(dealer, vehicles, lang)}
 
-Spoken replies stay to 1 or 2 sentences. Answer in the language the customer is speaking.
-If the visitor asks for a vehicle, a color, a budget, or a feature, name one matching vehicle and call showVehicles with the search query.
-Default session language: ${lang === 'en' ? 'English' : 'French'}.`;
+VOICE, SPEED & ACCENT RULES:
+1. When speaking English: use a native, standard North American English accent. Do not use a fake, exaggerated, or forced French accent. Speak clearly, warmly, and naturally.
+2. When speaking French: use clear, fluent Canadian French from Québec.
+3. Speak at a normal conversational pace. Do not drag out syllables. Keep spoken answers to 1 or 2 sentences.
+4. Default session language is ${lang === 'en' ? 'English' : 'French'}. If the visitor speaks English, answer in English. If the visitor speaks French, answer in French.
+If the visitor asks for a vehicle, a color, a budget, or a feature, name one matching vehicle and call showVehicles with the search query.`;
 }
 
 export function localFactualReply(message: string, dealer: DealerProfile, lang: 'fr' | 'en'): string | null {

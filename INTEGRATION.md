@@ -12,7 +12,7 @@ The widget now reads dealer 2 through the same public platform routes the live w
 
 Those calls are made by this app’s server (`/api/platform/context` and `/api/platform/vehicles`) so the page and the chat share one inventory. French and English phrases such as “VUS rouge” are passed to the platform search. Budget phrases such as “moins de 15 000” are translated into `maxPrice`, which the free-text search does not understand on its own.
 
-Text answers about hours, address, and phone come from that live profile. Vehicle cards in chat come from the live search. The voice bridge still runs here, and its prompt is filled with the same inventory.
+Text answers about hours, address, and phone come from that live profile. Vehicle cards in chat come from the live search. The voice bridge still runs here, and its prompt is filled with the same inventory. Spoken replies use Kore by default, with Puck as the other choice. Greeting audio is the studio recording, and live audio chunks are scheduled without the fade that was cutting off the voice.
 
 ## Live Lambert site
 

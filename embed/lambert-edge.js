@@ -1,5 +1,8 @@
-const CHAT_URL = "https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/aaf1ae3c06b5ecb83d484608543488ccb944889c/embed/lambert-chat.js";
+const SOURCE_COMMIT = "aaf1ae3c06b5ecb83d484608543488ccb944889c";
+const SOURCE_ROOT = `https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/${SOURCE_COMMIT}`;
+const CHAT_URL = `${SOURCE_ROOT}/embed/lambert-chat.js`;
 const ORIGIN = "https://automobile-richard-lambert.pages.dev";
+const GREETING_FILE = /^greeting-(?:en|fr|kore-en|kore-fr|puck-en)\.wav$/;
 
 async function chatBody() {
   const cache = caches.default;
@@ -39,6 +42,33 @@ function rewriteHtml(html) {
 export default {
   async fetch(request) {
     const incoming = new URL(request.url);
+    if (incoming.pathname.startsWith("/audio/")) {
+      const fileName = incoming.pathname.slice("/audio/".length);
+      if (!GREETING_FILE.test(fileName)) {
+        return new Response("Not found", { status: 404 });
+      }
+      try {
+        const audioUrl = `${SOURCE_ROOT}/public/audio/${fileName}`;
+        const cache = caches.default;
+        const cached = await cache.match(audioUrl);
+        const upstream = cached || await fetch(audioUrl, { headers: { "User-Agent": "lambert-studio-chat" } });
+        if (!upstream.ok) {
+          return new Response("Greeting audio unavailable", { status: 502 });
+        }
+        const bytes = await upstream.arrayBuffer();
+        const headers = {
+          "content-type": "audio/wav",
+          "cache-control": "public, max-age=86400",
+        };
+        if (!cached) {
+          await cache.put(audioUrl, new Response(bytes, { headers }));
+        }
+        return new Response(bytes, { headers });
+      } catch (error) {
+        return new Response(String(error && error.message ? error.message : error), { status: 502 });
+      }
+    }
+
     if (incoming.pathname === "/lambert-chat.js") {
       try {
         const bytes = await chatBody();
