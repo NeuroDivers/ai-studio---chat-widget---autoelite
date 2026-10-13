@@ -49,7 +49,16 @@ interface ApiVehicle {
   status?: string | null;
   description?: string | null;
   primary_image_url?: string | null;
+  image_count?: number | null;
+  images?: Array<ApiVehicleImage | string> | null;
   title?: string | null;
+}
+
+interface ApiVehicleImage {
+  image_url?: string | null;
+  url?: string | null;
+  is_primary?: boolean | number | null;
+  display_order?: number | null;
 }
 
 interface PublicDealer {
@@ -211,11 +220,68 @@ function vehicleStatus(raw: string): Vehicle['status'] {
   return 'available';
 }
 
+function deliveryImageId(url: string): string {
+  const match = url.match(/imagedelivery\.net\/[^/]+\/([^/?#]+)/i);
+  return match?.[1] || '';
+}
+
+/** imagedelivery `large` is forbidden. `public` is the variant that already loads. */
+export function publicDeliveryUrl(raw: string): string {
+  const url = clean(raw);
+  if (!url) return '';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.hostname !== 'imagedelivery.net') return url;
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length < 2) return url;
+  return `${parsed.origin}/${parts[0]}/${parts[1]}/public`;
+}
+
+function pushPhoto(urls: string[], seen: Set<string>, raw: string): void {
+  const url = publicDeliveryUrl(raw);
+  if (!url) return;
+  const key = deliveryImageId(url) || url;
+  if (seen.has(key)) return;
+  seen.add(key);
+  urls.push(url);
+}
+
+export function collectPhotoUrls(row: ApiVehicle): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const images = Array.isArray(row.images) ? [...row.images] : [];
+  images.sort((a, b) => {
+    const order = (image: ApiVehicleImage | string) =>
+      typeof image === 'string' ? 0 : Number(image?.display_order ?? 0);
+    return order(a) - order(b);
+  });
+  for (const image of images) {
+    if (typeof image === 'string') pushPhoto(urls, seen, image);
+    else if (image) pushPhoto(urls, seen, image.image_url || image.url || '');
+  }
+  pushPhoto(urls, seen, row.primary_image_url || '');
+  return urls;
+}
+
+export function galleryPhotos(vehicle: Pick<Vehicle, 'photo' | 'photos'>): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const photo of vehicle.photos || []) pushPhoto(urls, seen, photo);
+  if (!urls.length) pushPhoto(urls, seen, vehicle.photo);
+  return urls;
+}
+
 export function mapApiVehicle(row: ApiVehicle): Vehicle | null {
   const status = vehicleStatus(clean(row.status) || 'available');
   if (status !== 'available') return null;
   const body = canonicalBody(clean(row.body_style));
   const price = Number(row.sale_price || row.price || 0);
+  const photos = collectPhotoUrls(row);
+  const reportedCount = Number(row.image_count);
   return {
     id: Number(row.id),
     dealer_id: row.dealer_id ? Number(row.dealer_id) : undefined,
@@ -234,7 +300,9 @@ export function mapApiVehicle(row: ApiVehicle): Vehicle | null {
     stock_number: clean(row.stock_number),
     vin: clean(row.vin),
     status,
-    photo: clean(row.primary_image_url),
+    photo: clean(row.primary_image_url) || photos[0] || '',
+    photos,
+    imageCount: Number.isFinite(reportedCount) && reportedCount > 0 ? reportedCount : photos.length,
     description: clean(row.description),
     title: clean(row.title),
     engine: clean(row.engine),
@@ -521,6 +589,28 @@ export async function fetchDealerProfile(dealerId: number, apiBase = AUTOELITE_A
   const dealer = (await dealerRes.json()) as PublicDealer;
   const widget = widgetRes.ok ? ((await widgetRes.json()) as WidgetConfig) : {};
   return profileFromApi(dealer, widget, dealerId);
+}
+
+const vehiclePhotoCache = new Map<string, string[]>();
+
+/** The list route omits the images array. The same public vehicle route includes it. */
+export async function fetchVehiclePhotos(
+  vehicleId: number,
+  dealerId = DEFAULT_DEALER_ID,
+  apiBase = AUTOELITE_API_BASE,
+): Promise<string[]> {
+  const key = `${apiBase}:${dealerId}:${vehicleId}`;
+  const cached = vehiclePhotoCache.get(key);
+  if (cached) return cached;
+  const response = await fetch(`${apiBase}/api/ai/dealers/${dealerId}/vehicles/${vehicleId}`, {
+    headers: { Accept: 'application/json', 'User-Agent': 'autoelite-lambert-widget' },
+  });
+  if (!response.ok) return [];
+  const payload = (await response.json()) as ApiVehicle & { vehicle?: ApiVehicle };
+  const row = Array.isArray(payload.images) || payload.primary_image_url ? payload : payload.vehicle;
+  const photos = row ? collectPhotoUrls(row) : [];
+  if (photos.length) vehiclePhotoCache.set(key, photos);
+  return photos;
 }
 
 export async function fetchDealerVehicles(searchText: string, dealerId: number, apiBase = AUTOELITE_API_BASE): Promise<Vehicle[]> {

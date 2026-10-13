@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Vehicle } from '../types/inventory';
 import { useDealer } from '../dealerContext';
-import { stockLabel } from '../dealerPlatform';
+import { fetchVehiclePhotos, galleryPhotos, stockLabel } from '../dealerPlatform';
 import { formatCadPrice, formatMileage } from './VehicleCard';
-import { ArrowLeft, Gauge, Tag, Zap, Cog, Fuel, Compass, Calendar, Phone, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Gauge, Tag, Zap, Cog, Fuel, Compass, Calendar, Phone, CheckCircle2 } from 'lucide-react';
 
 type DetailLanguage = 'fr' | 'en';
 
@@ -21,6 +21,9 @@ const COPY = {
     backMessages: 'Retour aux messages',
     backResults: 'Retour aux résultats',
     photoSoon: 'Photo à venir',
+    previousPhoto: 'Photo précédente',
+    nextPhoto: 'Photo suivante',
+    photoLabel: (index: number, total: number) => `Photo ${index} sur ${total}`,
     available: 'Disponible',
     mileage: 'Kilométrage',
     drivetrain: 'Traction',
@@ -46,6 +49,9 @@ const COPY = {
     backMessages: 'Back to messages',
     backResults: 'Back to results',
     photoSoon: 'Photo coming soon',
+    previousPhoto: 'Previous photo',
+    nextPhoto: 'Next photo',
+    photoLabel: (index: number, total: number) => `Photo ${index} of ${total}`,
     available: 'Available',
     mileage: 'Mileage',
     drivetrain: 'Drivetrain',
@@ -68,6 +74,101 @@ const COPY = {
     fallback: (name: string) => `Available now at ${name}.`,
   },
 } as const;
+
+function VehicleGallery({
+  vehicle,
+  alt,
+  copy,
+}: {
+  vehicle: Vehicle;
+  alt: string;
+  copy: (typeof COPY)[DetailLanguage];
+}) {
+  const [photos, setPhotos] = useState<string[]>(() => galleryPhotos(vehicle));
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    const known = galleryPhotos(vehicle);
+    setPhotos(known);
+    setIndex(0);
+    if (!vehicle.dealer_id) return;
+    if (!(typeof vehicle.imageCount === 'number' && vehicle.imageCount > known.length)) return;
+    let cancelled = false;
+    fetchVehiclePhotos(vehicle.id, vehicle.dealer_id)
+      .then((urls) => {
+        if (cancelled || urls.length <= known.length) return;
+        setPhotos(urls);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vehicle.id, vehicle.dealer_id, vehicle.imageCount, vehicle.photo, vehicle.photos]);
+
+  const count = photos.length;
+  const safeIndex = count === 0 ? 0 : ((index % count) + count) % count;
+  const current = photos[safeIndex];
+  const showStrip = count > 1;
+  const go = (delta: number) => {
+    if (count < 2) return;
+    setIndex((prev) => (prev + delta + count) % count);
+  };
+
+  return (
+    <div
+      className="lambert-gallery"
+      data-lambert-gallery=""
+      tabIndex={showStrip ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          go(1);
+        } else if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          go(-1);
+        }
+      }}
+    >
+      <div className="lambert-gallery-frame" data-lambert-gallery-main="">
+        {current ? (
+          <img src={current} alt={showStrip ? `${alt} (${safeIndex + 1}/${count})` : alt} data-lambert-photo={safeIndex} />
+        ) : (
+          <div className="lambert-gallery-placeholder">{copy.photoSoon}</div>
+        )}
+        {showStrip ? (
+          <>
+            <button type="button" className="lambert-gallery-nav lambert-gallery-nav-prev" aria-label={copy.previousPhoto} onClick={() => go(-1)}>
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <button type="button" className="lambert-gallery-nav lambert-gallery-nav-next" aria-label={copy.nextPhoto} onClick={() => go(1)}>
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          </>
+        ) : null}
+      </div>
+      {showStrip ? (
+        <div className="lambert-gallery-thumbs" data-lambert-thumbs="">
+          {photos.map((src, photoIndex) => {
+            const active = photoIndex === safeIndex;
+            return (
+              <button
+                key={`${src}-${photoIndex}`}
+                type="button"
+                data-lambert-thumb={active ? 'active' : 'idle'}
+                aria-label={copy.photoLabel(photoIndex + 1, count)}
+                aria-current={active ? 'true' : undefined}
+                onClick={() => setIndex(photoIndex)}
+                className={active ? 'is-active' : undefined}
+              >
+                <img src={src} alt="" />
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function vehicleTitle(vehicle: Vehicle): string {
   return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim]
@@ -132,15 +233,7 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
             <div className="mt-1.5 text-2xl font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
           </div>
 
-          <div className="relative aspect-[16/10] max-h-40 w-full overflow-hidden rounded-xl bg-gray-200">
-            {vehicle.photo ? (
-              <img src={vehicle.photo} alt={photoAlt} className="h-full w-full object-cover" />
-            ) : (
-              <div className="flex h-full min-h-32 w-full items-center justify-center text-sm font-medium text-gray-500">
-                {copy.photoSoon}
-              </div>
-            )}
-          </div>
+          <VehicleGallery vehicle={vehicle} alt={photoAlt} copy={copy} />
 
           <div className="@container">
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 @min-[520px]:grid-cols-3">

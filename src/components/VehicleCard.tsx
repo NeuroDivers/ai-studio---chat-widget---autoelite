@@ -9,6 +9,8 @@ interface VehicleCardProps {
   compact?: boolean;
   /** Tighter image-on-top card for the expanded results grid. */
   dense?: boolean;
+  /** Compact thumbnail row for the expanded split list. */
+  row?: boolean;
   selected?: boolean;
   language?: 'fr' | 'en';
 }
@@ -26,14 +28,59 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
   onSelect,
   compact = false,
   dense = false,
+  row = false,
   selected = false,
   language = 'fr',
 }) => {
   const photoSoon = language === 'en' ? 'Photo coming soon' : 'Photo à venir';
   const available = language === 'en' ? 'Available' : 'Disponible';
-  const title = dense
+  const title = dense || row
     ? [vehicle.year, vehicle.make, vehicle.model].filter((part) => String(part ?? '').trim() !== '').join(' ')
     : `${vehicle.make} ${vehicle.model}`;
+  const thumb = vehicle.photo || vehicle.photos?.[0] || '';
+
+  if (row) {
+    const meta = [formatMileage(vehicle.mileage), vehicle.exterior_color].filter(Boolean).join(' · ');
+    return (
+      <div
+        onClick={() => onSelect(vehicle)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSelect(vehicle);
+          }
+        }}
+        role="button"
+        tabIndex={0}
+        aria-pressed={selected}
+        data-lambert-row=""
+        style={selected ? { border: '3px solid #991b1e' } : undefined}
+        className={`flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg border bg-white p-2 text-left shadow-sm transition-colors hover:bg-gray-50 ${
+          selected ? 'border-[#991b1e]' : 'border-gray-200'
+        }`}
+      >
+        <div className="h-14 w-16 shrink-0 overflow-hidden rounded-md bg-gray-200">
+          {thumb ? (
+            <img
+              src={thumb}
+              alt=""
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] font-medium text-gray-500">
+              {photoSoon}
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="line-clamp-2 text-sm font-bold leading-tight text-gray-900">{title}</h4>
+          <div className="mt-0.5 text-sm font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
+          {meta ? <p className="truncate text-xs capitalize text-gray-600">{meta}</p> : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

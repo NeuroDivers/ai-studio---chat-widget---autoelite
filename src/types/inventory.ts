@@ -17,6 +17,10 @@ export interface Vehicle {
   vin?: string;
   status: 'available' | 'draft' | 'pending' | 'reserved' | 'sold' | 'archived';
   photo: string;
+  /** Every photo URL already on the vehicle, public imagedelivery variant when applicable. */
+  photos?: string[];
+  /** Count reported by the inventory payload, including photos the list row does not inline. */
+  imageCount?: number;
   description?: string;
   title?: string;
   engine?: string;

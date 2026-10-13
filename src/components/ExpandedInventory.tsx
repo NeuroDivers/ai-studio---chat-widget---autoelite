@@ -19,19 +19,21 @@ function ResultGrid({
   language,
   resultsLabel,
   onSelect,
-}: Omit<ExpandedInventoryProps, 'onBack' | 'onRequestInfo'>) {
+  rows = false,
+}: Omit<ExpandedInventoryProps, 'onBack' | 'onRequestInfo'> & { rows?: boolean }) {
   return (
     <>
       <div className="shrink-0 px-3 pt-3 text-[11px] font-bold uppercase tracking-wider text-gray-500">
         {resultsLabel}
       </div>
-      <div className="lambert-results min-h-0 flex-1 overflow-y-auto p-3" data-lambert-results="">
+      <div className={`lambert-results min-h-0 flex-1 overflow-y-auto ${rows ? 'p-2' : 'p-3'}`} data-lambert-results="">
         <div className="lambert-vehicle-grid" data-lambert-grid="">
           {vehicles.map((vehicle) => (
             <VehicleCard
               key={vehicle.id}
               vehicle={vehicle}
-              dense
+              dense={!rows}
+              row={rows}
               language={language}
               selected={selectedVehicle?.id === vehicle.id}
               onSelect={onSelect}
@@ -76,6 +78,7 @@ export const ExpandedInventory: React.FC<ExpandedInventoryProps> = ({
           language={language}
           resultsLabel={resultsLabel}
           onSelect={onSelect}
+          rows
         />
       </div>
       <div className="lambert-split-detail">
