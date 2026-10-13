@@ -302,6 +302,80 @@ function parseAmount(raw: string, suffix?: string): number {
   return amount;
 }
 
+const SEARCH_STEMS = [
+  'volkswagen', 'honda', 'toyota', 'mazda', 'hyundai', 'ford', 'kia', 'nissan',
+  'chevrolet', 'subaru', 'bmw', 'mercedes', 'audi', 'jeep', 'gmc', 'dodge', 'ram',
+  'acura', 'lexus', 'infiniti', 'volvo', 'porsche', 'buick', 'cadillac', 'chrysler',
+  'lincoln', 'genesis', 'tesla', 'mitsubishi', 'fiat', 'mini',
+  'tiguan', 'jetta', 'golf', 'passat', 'atlas', 'taos', 'beetle', 'kona', 'tucson',
+  'elantra', 'civic', 'accord', 'odyssey', 'corolla', 'camry', 'rav4', 'sentra', 'rogue',
+  'suv', 'vus', 'berline', 'sedan', 'camion', 'truck', 'rouge', 'red', 'noir', 'black',
+  'blanc', 'white', 'bleu', 'blue', 'gris', 'gray', 'grey', 'argent', 'silver', 'vert', 'green',
+  'awd', 'fwd', 'rwd',
+];
+
+const SEARCH_ALIASES: Record<string, string> = {
+  vw: 'volkswagen',
+  vws: 'volkswagen',
+  volkswagon: 'volkswagen',
+  volkswagons: 'volkswagen',
+  chevy: 'chevrolet',
+  chevys: 'chevrolet',
+  benz: 'mercedes',
+  'mercedes-benz': 'mercedes',
+};
+
+const SEARCH_STEM_SET = new Set(SEARCH_STEMS);
+
+function foldSearchToken(token: string): string {
+  return token
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function canonicalSearchToken(token: string): string {
+  const key = foldSearchToken(token);
+  if (SEARCH_ALIASES[key]) return SEARCH_ALIASES[key];
+  if (SEARCH_STEM_SET.has(key)) return key;
+  if (key.endsWith('s') && SEARCH_STEM_SET.has(key.slice(0, -1))) return key.slice(0, -1);
+  if (key.endsWith('es') && SEARCH_STEM_SET.has(key.slice(0, -2))) return key.slice(0, -2);
+  return token;
+}
+
+const INVENTORY_PHRASE =
+  /\b(?:do you have any|do you have|have you got any|have you got|got any|are there any|is there any|looking for|show me|i am looking for|can you show|est-ce que vous avez|avez-vous|avez vous|vous avez|je cherche|je recherche|je voudrais|je veux)\b/gi;
+
+const INVENTORY_FILLER =
+  /\b(?:any|some|please|svp|des|du|un|une|the|a|an|me|of)\b/gi;
+
+function canonicalizeSearchText(text: string): string {
+  let remaining = text.replace(/[’']/g, "'").replace(/\bi'm\b/gi, 'i am');
+  remaining = remaining.replace(/[?!.,;:]+/g, ' ');
+  remaining = remaining.replace(INVENTORY_PHRASE, ' ');
+  remaining = remaining.replace(INVENTORY_FILLER, ' ');
+  remaining = remaining.replace(/\s+/g, ' ').trim();
+  if (!remaining) return '';
+  return remaining.split(' ').map((token) => canonicalSearchToken(token)).join(' ');
+}
+
+export function canonicalBrandLabel(query: string): string | null {
+  const normalized = foldSearchToken(query).replace(/[’']/g, "'");
+  const aliases = [...SEARCH_STEMS, ...Object.keys(SEARCH_ALIASES)].sort((a, b) => b.length - a.length);
+  for (const alias of aliases) {
+    if (!/volkswagen|honda|toyota|mazda|hyundai|ford|kia|nissan|chevrolet|subaru|bmw|mercedes|audi|jeep|gmc|dodge|ram|acura|lexus|infiniti|volvo|porsche|buick|cadillac|chrysler|lincoln|genesis|tesla|mitsubishi|fiat|mini|vw|chevy|benz/.test(alias)) {
+      continue;
+    }
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\b${escaped}s?\\b`, 'i').test(normalized)) {
+      const canonical = SEARCH_ALIASES[alias] || (SEARCH_STEM_SET.has(alias) ? alias : alias);
+      const label = SEARCH_ALIASES[canonical] || canonical;
+      return label.charAt(0).toUpperCase() + label.slice(1);
+    }
+  }
+  return null;
+}
+
 export function parseVehicleQuery(searchText: string): ParsedVehicleQuery {
   let remaining = searchText.trim();
   let maxPrice: number | undefined;
@@ -328,7 +402,9 @@ export function parseVehicleQuery(searchText: string): ParsedVehicleQuery {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const stopOnly = /^(le|la|les|un|une|des|vehicule|véhicule|voiture|auto|car|inventory|inventaire|disponible|disponibles)?$/i;
+  remaining = canonicalizeSearchText(remaining);
+
+  const stopOnly = /^(le|la|les|un|une|des|vehicule|véhicule|vehicules|voiture|voitures|auto|autos|car|cars|vehicle|vehicles|inventory|inventaire|disponible|disponibles)?$/i;
   return {
     search: stopOnly.test(remaining) ? '' : remaining,
     maxPrice,
@@ -414,7 +490,7 @@ export function localFactualReply(message: string, dealer: DealerProfile, lang: 
     .replace(/[\u0300-\u036f]/g, '');
 
   const asksHours = /heure|ouvert|horaire|open|hour|ferme/.test(query);
-  const asksAddress = /adresse|ou etes|ou suis|where|located|situ/.test(query);
+  const asksAddress = /adresse|address|ou etes|ou suis|where|located|situ/.test(query);
   const asksPhone = /telephone|phone|appeler|call|joindre|numero/.test(query);
 
   if (!asksHours && !asksAddress && !asksPhone) return null;

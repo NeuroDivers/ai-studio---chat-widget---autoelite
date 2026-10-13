@@ -5,6 +5,7 @@ import {
   InventoryResponse,
   PROTOTYPE_DEALER,
   fetchDealerProfile,
+  canonicalBrandLabel,
   fetchDealerVehicles,
   localFactualReply,
   prototypeInventory,
@@ -44,29 +45,73 @@ function normalizeText(text: string): string {
  * Checks whether a given message represents a vehicle search query
  * that should be answered from inventory without sending to Gemini.
  */
+function isShowroomFactQuestion(normalized: string): boolean {
+  const asksHours = /heure|ouvert|horaire|open|hour|ferme/.test(normalized);
+  const asksAddress = /adresse|address|ou etes|ou suis|where|located|situ/.test(normalized);
+  const asksPhone = /telephone|phone|appeler|call|joindre|numero/.test(normalized);
+  return asksHours || asksAddress || asksPhone;
+}
+
 export function isVehicleSearchQuery(query: string): boolean {
   if (!query || !query.trim()) return false;
   const normalized = normalizeText(query);
 
+  if (canonicalBrandLabel(query)) return true;
+
   const vehicleKeywords = [
     'vus', 'suv', 'utilitaire', 'crossover', 'berline', 'sedan', 'camion', 'truck',
-    'auto', 'voiture', 'vehicule', 'char', 'inventory', 'inventaire',
-    'honda', 'toyota', 'mazda', 'hyundai', 'ford',
-    'cr-v', 'crv', 'rav4', 'cx-5', 'cx5', 'elantra', 'f-150', 'f150',
+    'auto', 'voiture', 'vehicule', 'char', 'car', 'inventory', 'inventaire',
+    'honda', 'toyota', 'mazda', 'hyundai', 'ford', 'kia', 'nissan', 'chevrolet', 'chevy',
+    'subaru', 'bmw', 'mercedes', 'audi', 'jeep', 'gmc', 'dodge', 'ram', 'acura', 'lexus',
+    'infiniti', 'volvo', 'porsche', 'buick', 'cadillac', 'chrysler', 'lincoln', 'genesis',
+    'tesla', 'mitsubishi', 'fiat', 'mini', 'volkswagen', 'vw',
+    'cr-v', 'crv', 'rav4', 'cx-5', 'cx5', 'elantra', 'f-150', 'f150', 'tiguan', 'jetta',
+    'golf', 'passat', 'atlas', 'kona', 'civic', 'accord', 'corolla', 'camry',
     'awd', '4x4', 'fwd', 'rwd', 'traction', 'integrale', 'propulsion',
     'automatique', 'manuelle',
     'essence', 'diesel', 'hybride', 'electrique',
     'rouge', 'noir', 'blanc', 'gris', 'bleu', 'red', 'black', 'white', 'grey', 'gray', 'blue',
-    'cherche', 'recherche', 'trouve', 'trouver', 'montre', 'avez-vous', 'disponible', 'disponibles',
+    'cherche', 'recherche', 'trouve', 'trouver', 'montre', 'disponible', 'disponibles',
     'budget', 'prix', 'combien', 'moins de', 'under'
   ];
 
-  return vehicleKeywords.some(keyword => {
+  const keywordHit = vehicleKeywords.some(keyword => {
     const normKeyword = normalizeText(keyword);
-    // Whole word or boundary match
-    const regex = new RegExp(`\\b${normKeyword.replace('-', '[- ]?')}\\b`, 'i');
+    const body = normKeyword.replace('-', '[- ]?');
+    const pattern = body.includes(' ') ? body : `${body}s?`;
+    const regex = new RegExp(`\\b${pattern}\\b`, 'i');
     return regex.test(normalized);
   });
+  if (keywordHit) return true;
+  if (isShowroomFactQuestion(normalized)) return false;
+
+  const inventoryPhrases = [
+    'do you have any', 'have any', 'got any', 'looking for', 'show me', 'in stock',
+    'avez-vous', 'avez vous', 'vous avez', 'je cherche', 'je veux',
+  ];
+  return inventoryPhrases.some((phrase) => normalized.includes(normalizeText(phrase)));
+}
+
+export function inventoryReplyText(query: string, count: number, lang: 'fr' | 'en'): string {
+  if (count === 1) {
+    return lang === 'en'
+      ? 'Here is the available vehicle matching your search:'
+      : 'Voici le véhicule disponible correspondant à votre recherche :';
+  }
+  if (count > 1) {
+    return lang === 'en'
+      ? `Here are the ${count} available vehicles matching your search:`
+      : `Voici les ${count} véhicules disponibles correspondant à votre recherche :`;
+  }
+  const brand = canonicalBrandLabel(query);
+  if (brand) {
+    return lang === 'en'
+      ? `I don't see any ${brand} in the current inventory.`
+      : `Je ne vois aucun ${brand} dans l'inventaire actuel.`;
+  }
+  return lang === 'en'
+    ? 'No available vehicles match your search. Would you like to explore another vehicle type such as an SUV, sedan, or truck?'
+    : 'Aucun véhicule disponible ne correspond à votre recherche. Souhaitez-vous explorer un autre type de véhicule comme un VUS, une berline ou un camion ?';
 }
 
 /**
@@ -126,10 +171,37 @@ function advisorFallback(dealer: DealerProfile, lang: 'fr' | 'en'): string {
     : `${dealer.agentName} peut vous aider à chercher dans l'inventaire de ${dealer.name}. Appelez au ${dealer.phone} ou passez au ${dealer.addressLine}.`;
 }
 
+function isRawProxyError(text: string): boolean {
+  return /\b403\b|unauthorized|bot verification|turnstile|security check/i.test(text);
+}
+
+async function inventoryFallbackText(message: string, lang: 'fr' | 'en'): Promise<string | null> {
+  try {
+    const vehicles = await loadVehicles(message);
+    if (vehicles.length > 0 || isVehicleSearchQuery(message)) {
+      return inventoryReplyText(message, vehicles.length, lang);
+    }
+  } catch (error) {
+    console.warn('Inventory fallback failed', error);
+  }
+  return null;
+}
+
+function localAssistReply(dealer: DealerProfile, lang: 'fr' | 'en'): string {
+  return lang === 'en'
+    ? `I can search the inventory at ${dealer.name}, or share the hours, address, and phone.`
+    : `Je peux chercher dans l'inventaire de ${dealer.name}, ou vous donner les heures, l'adresse et le téléphone.`;
+}
+
 export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<string> {
   const dealer = await loadDealerContext();
   const factual = localFactualReply(message, dealer, lang);
   if (directPlatform && factual) return factual;
+
+  if (directPlatform && isVehicleSearchQuery(message)) {
+    const vehicles = await loadVehicles(message);
+    return inventoryReplyText(message, vehicles.length, lang);
+  }
 
   try {
     if (directPlatform) {
@@ -140,8 +212,8 @@ export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<
       });
       const data = (await response.json().catch(() => ({}))) as { reply?: string; text?: string };
       const text = (data.reply || data.text || '').trim();
-      if (response.ok && text) return text;
-      return factual || advisorFallback(dealer, lang);
+      if (response.ok && text && !isRawProxyError(text)) return text;
+      return factual || (await inventoryFallbackText(message, lang)) || localAssistReply(dealer, lang);
     }
 
     const response = await fetch('/api/chat', {
@@ -153,6 +225,9 @@ export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<
     if (data.text) return data.text;
   } catch (error) {
     console.warn('Advisor reply failed', error);
+    if (directPlatform) {
+      return factual || (await inventoryFallbackText(message, lang)) || localAssistReply(dealer, lang);
+    }
   }
 
   return factual || advisorFallback(dealer, lang);

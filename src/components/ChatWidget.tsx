@@ -24,6 +24,7 @@ import {
   loadVehicles,
   startVoiceSession,
   isVehicleSearchQuery,
+  inventoryReplyText,
   answerDealer,
   directPlatform,
   LiveVoiceSession,
@@ -82,7 +83,7 @@ const STRINGS = {
     simulateEn: '⚡ Simuler "Red SUV"',
     debugTitle: 'Diagnostic Audio & Voix Bilingue',
     voiceMessageBadge: 'Message vocal',
-    voiceNeedsStudio: 'La voix en direct passe par le studio. Écrivez votre question.',
+    speechUnavailable: "La reconnaissance vocale n'est pas disponible dans ce navigateur.",
   },
   en: {
     dealerName: 'Automobile Lambert',
@@ -123,7 +124,7 @@ const STRINGS = {
     simulateEn: '⚡ Simulate "Red SUV"',
     debugTitle: 'Audio & Bilingual Voice Diagnostics',
     voiceMessageBadge: 'Voice message',
-    voiceNeedsStudio: 'Voice chat needs the studio bridge. Type your question.',
+    speechUnavailable: 'Speech recognition is not available in this browser.',
   },
 };
 
@@ -227,6 +228,11 @@ export const ChatWidget: React.FC = () => {
   const currentAssistantMsgIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isListeningRef = useRef<boolean>(false);
+  const speechTranscriptRef = useRef<string>('');
+  const speechDraftIdRef = useRef<string | null>(null);
+  const speechCancelRef = useRef<boolean>(false);
+  const speechCompletingRef = useRef<boolean>(false);
+  const speechUnavailableNotedRef = useRef<boolean>(false);
   const hasReceivedModelAudioRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const holdStartTimeRef = useRef<number>(0);
@@ -454,28 +460,236 @@ export const ChatWidget: React.FC = () => {
     }
     audioCaptureRef.current?.stop();
     if (speechRecognitionRef.current) {
-      try { speechRecognitionRef.current.stop(); } catch {}
+      const recognition = speechRecognitionRef.current;
       speechRecognitionRef.current = null;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try { recognition.stop(); } catch {}
     }
     setVolumeLevel(0);
   }, []);
 
   // Cancel voice interaction without sending
   const cancelListening = useCallback(() => {
+    speechCancelRef.current = true;
+    speechTranscriptRef.current = '';
+    const draftId = speechDraftIdRef.current;
+    speechDraftIdRef.current = null;
     cleanStopRecording();
     setVoiceStatus('idle');
     setLiveTranscript('');
     setShowVoicePulseOverlay(false);
     activeSessionRef.current?.close();
     activeSessionRef.current = null;
+    if (draftId) {
+      setMessages((prev) => prev.filter((message) => message.id !== draftId));
+    }
     setLastDebugEvent('Écoute annulée');
   }, [cleanStopRecording]);
+
+  const composeReply = useCallback(async (query: string): Promise<{ text: string; vehicles?: Vehicle[] }> => {
+    const unreachable =
+      language === 'en'
+        ? 'I could not reach the showroom just now. Please try again.'
+        : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+    try {
+      if (isVehicleSearchQuery(query)) {
+        const results = await loadVehicles(query);
+        return {
+          text: inventoryReplyText(query, results.length, language),
+          vehicles: results.length > 0 ? results : undefined,
+        };
+      }
+      const text = await answerDealer(query, language);
+      if (/peut vous aider à chercher|can help you search the inventory|\b403\b|unauthorized origin|bot verification failed/i.test(text)) {
+        const results = await loadVehicles(query);
+        if (results.length > 0) {
+          return {
+            text: inventoryReplyText(query, results.length, language),
+            vehicles: results,
+          };
+        }
+        if (isVehicleSearchQuery(query)) {
+          return { text: inventoryReplyText(query, 0, language) };
+        }
+        return {
+          text:
+            language === 'en'
+              ? 'I can search the inventory, or share the hours, address, and phone.'
+              : "Je peux chercher dans l'inventaire, ou vous donner les heures, l'adresse et le téléphone.",
+        };
+      }
+      return { text };
+    } catch {
+      return { text: unreachable };
+    }
+  }, [language]);
+
+  const noteSpeechUnavailable = useCallback(() => {
+    if (speechUnavailableNotedRef.current) return;
+    speechUnavailableNotedRef.current = true;
+    setVoiceBridgeNotice(t.speechUnavailable);
+    setLastDebugEvent(t.speechUnavailable);
+  }, [t.speechUnavailable]);
+
+  const completeBrowserSpeech = useCallback((reason: 'click' | 'end') => {
+    if (speechCancelRef.current) return;
+    if (speechCompletingRef.current) return;
+    if (reason === 'end' && !isListeningRef.current) return;
+
+    const query = speechTranscriptRef.current.trim();
+    speechCompletingRef.current = true;
+    isListeningRef.current = false;
+
+    const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try { recognition.stop(); } catch { /* already ended */ }
+    }
+
+    setShowVoicePulseOverlay(false);
+    setVolumeLevel(0);
+
+    if (!query) {
+      const draftId = speechDraftIdRef.current;
+      speechDraftIdRef.current = null;
+      if (draftId) {
+        setMessages((prev) => prev.filter((message) => message.id !== draftId));
+      }
+      setLiveTranscript('');
+      setVoiceStatus('idle');
+      speechCompletingRef.current = false;
+      return;
+    }
+
+    setVoiceStatus('thinking');
+    setLastDebugEvent(`Passage en 'Thinking...' pour: "${query}"`);
+    setLiveTranscript('');
+    const assistantMsgId = 'voice-a-' + Date.now();
+    currentAssistantMsgIdRef.current = assistantMsgId;
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantMsgId, sender: 'assistant', text: '', isThinking: true },
+    ]);
+
+    composeReply(query)
+      .then((reply) => {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMsgId
+              ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
+              : message
+          )
+        );
+        setVoiceStatus('idle');
+      })
+      .catch(() => {
+        const text =
+          language === 'en'
+            ? 'I could not reach the showroom just now. Please try again.'
+            : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+          )
+        );
+        setVoiceStatus('idle');
+      })
+      .finally(() => {
+        speechCompletingRef.current = false;
+      });
+  }, [composeReply, language]);
+
+  const startBrowserSpeech = useCallback(() => {
+    if (isListeningRef.current || speechCompletingRef.current) return;
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      noteSpeechUnavailable();
+      return;
+    }
+
+    speechCancelRef.current = false;
+    speechTranscriptRef.current = '';
+    speechCompletingRef.current = false;
+    isListeningRef.current = true;
+    const draftId = 'speech-live-' + Date.now();
+    speechDraftIdRef.current = draftId;
+    setVoiceStatus('listening');
+    setLiveTranscript('');
+    setVoiceBridgeNotice('');
+    setVolumeLevel(0);
+    setLastDebugEvent(`Écoute du navigateur (${language === 'en' ? 'en-US' : 'fr-CA'})`);
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    audioPlaybackRef.current?.interrupt();
+    setIsPlayingIntro(false);
+
+    let recognition: any;
+    try {
+      recognition = new SpeechRecognitionCtor();
+    } catch {
+      isListeningRef.current = false;
+      setVoiceStatus('idle');
+      noteSpeechUnavailable();
+      return;
+    }
+
+    recognition.lang = language === 'en' ? 'en-US' : 'fr-CA';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event: any) => {
+      const results = event?.results;
+      if (!results) return;
+      let text = '';
+      for (let i = 0; i < results.length; i++) {
+        text += results[i][0]?.transcript || '';
+      }
+      const trimmed = text.replace(/\s+/g, ' ').trim();
+      if (!trimmed) return;
+      speechTranscriptRef.current = trimmed;
+      setLiveTranscript(trimmed);
+      setMessages((prev) => {
+        if (prev.some((message) => message.id === draftId)) {
+          return prev.map((message) => (message.id === draftId ? { ...message, text: trimmed } : message));
+        }
+        return [...prev, { id: draftId, sender: 'user', text: trimmed, isVoice: true }];
+      });
+    };
+    recognition.onerror = (event: any) => {
+      const code = String(event?.error || '');
+      if (code === 'aborted' || code === 'no-speech') return;
+      if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture' || code === 'network') {
+        noteSpeechUnavailable();
+      }
+    };
+    recognition.onend = () => {
+      if (speechCancelRef.current) return;
+      if (speechRecognitionRef.current !== recognition) return;
+      completeBrowserSpeech('end');
+    };
+
+    speechRecognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      speechRecognitionRef.current = null;
+      isListeningRef.current = false;
+      setVoiceStatus('idle');
+      noteSpeechUnavailable();
+    }
+  }, [completeBrowserSpeech, language, noteSpeechUnavailable]);
 
   // Start Voice Session (Listening Mode). The dealer embed has no /api/live socket.
   const startListening = useCallback(async () => {
     if (directPlatform) {
-      setVoiceBridgeNotice(t.voiceNeedsStudio);
-      setLastDebugEvent(t.voiceNeedsStudio);
+      startBrowserSpeech();
       return;
     }
     if (isListeningRef.current) return;
@@ -639,7 +853,7 @@ export const ChatWidget: React.FC = () => {
       setLastDebugEvent(`Erreur micro: ${err.message}`);
       console.error('Failed to start voice capture:', err);
     }
-  }, [cleanStopRecording, language, selectedVoice, t.voiceNeedsStudio]);
+  }, [cleanStopRecording, language, selectedVoice, startBrowserSpeech]);
 
   // Submit voice turn: Transitions from "Listening..." -> "Thinking..." -> Model reply
   const submitVoiceTurn = useCallback(() => {
@@ -682,12 +896,15 @@ export const ChatWidget: React.FC = () => {
     ]);
 
     if (directPlatform) {
-      answerDealer(effectiveText, language)
-        .then((text) => {
-          activeModelTranscriptRef.current = text;
+      const spoken = userQuery || effectiveText;
+      composeReply(spoken)
+        .then((reply) => {
+          activeModelTranscriptRef.current = reply.text;
           setMessages((prev) =>
             prev.map((message) =>
-              message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+              message.id === assistantMsgId
+                ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
+                : message
             )
           );
           setVoiceStatus('idle');
@@ -704,17 +921,6 @@ export const ChatWidget: React.FC = () => {
           );
           setVoiceStatus('idle');
         });
-      if (userQuery && isVehicleSearchQuery(userQuery)) {
-        loadVehicles(userQuery).then((matched) => {
-          if (matched.length > 0) {
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantMsgId ? { ...message, vehicles: matched } : message
-              )
-            );
-          }
-        });
-      }
       setLiveTranscript('');
       return;
     }
@@ -759,14 +965,18 @@ export const ChatWidget: React.FC = () => {
     }, 4500);
 
     setLiveTranscript('');
-  }, [cleanStopRecording, dealer.name, language, liveTranscript, voiceStatus]);
+  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, voiceStatus]);
 
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     if (directPlatform) {
-      setVoiceBridgeNotice(t.voiceNeedsStudio);
-      setLastDebugEvent(t.voiceNeedsStudio);
+      if (voiceStatus === 'thinking' || speechCompletingRef.current) return;
+      if (voiceStatus === 'listening' || isListeningRef.current) {
+        completeBrowserSpeech('click');
+        return;
+      }
+      startBrowserSpeech();
       return;
     }
     if (voiceStatus === 'listening') {
@@ -813,45 +1023,14 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) => [...prev, userMessage]);
     setInputText('');
 
-    if (isVehicleSearchQuery(query)) {
-      const results = await loadVehicles(query);
-      let replyText = '';
-      if (results.length > 0) {
-        replyText =
-          results.length === 1
-            ? t.singleMatch
-            : t.multipleMatch(results.length);
-      } else {
-        replyText = t.noMatch;
-      }
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text: replyText,
-          vehicles: results.length > 0 ? results : undefined,
-        },
-      ]);
-      return;
-    }
-
-    let text: string;
-    try {
-      text = await answerDealer(query, language);
-    } catch {
-      text =
-        language === 'en'
-          ? 'I could not reach the showroom just now. Please try again.'
-          : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
-    }
+    const reply = await composeReply(query);
     setMessages((prev) => [
       ...prev,
       {
         id: 'msg-a-' + Date.now(),
         sender: 'assistant',
-        text,
+        text: reply.text,
+        vehicles: reply.vehicles,
       },
     ]);
   };
@@ -1252,7 +1431,10 @@ export const ChatWidget: React.FC = () => {
                   </span>
                   <button
                     type="button"
-                    onClick={submitVoiceTurn}
+                    onClick={() => {
+                      if (directPlatform) completeBrowserSpeech('click');
+                      else submitVoiceTurn();
+                    }}
                     className="inline-flex items-center gap-1.5 bg-[#991b1e] hover:bg-[#801618] active:scale-95 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-all cursor-pointer"
                   >
                     <span>{t.sendToAi}</span>
