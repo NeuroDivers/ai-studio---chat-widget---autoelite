@@ -439,6 +439,7 @@ export const ChatWidget: React.FC = () => {
           }
         },
         onTurnComplete: () => {
+          audioPlaybackRef.current?.endStream();
           setVoiceStatus('idle');
           setLastDebugEvent('Tour IA terminé');
         },

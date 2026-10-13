@@ -71,7 +71,61 @@ Réponds brièvement et poliment en français québécois standard. Encourage le
   }
 });
 
-// High-fidelity spoken greeting introduction audio endpoint (serves studio Aoede WAV with 0ms delay)
+// Helper to wrap raw 16-bit linear PCM into a pristine RIFF WAV with smooth 100ms cosine fade-out and 60ms silence tail
+function createWavWithFade(
+  pcmBuffer: Buffer,
+  sampleRate = 24000,
+  numChannels = 1,
+  fadeOutMs = 100,
+  silenceTailMs = 60
+): Buffer {
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const numFrames = Math.floor(pcmBuffer.length / blockAlign);
+  const fadeOutFrames = Math.floor(sampleRate * (fadeOutMs / 1000));
+  const silenceFrames = Math.floor(sampleRate * (silenceTailMs / 1000));
+
+  const totalFrames = numFrames + silenceFrames;
+  const outputPcmLength = totalFrames * blockAlign;
+  const outPcm = Buffer.alloc(outputPcmLength);
+  pcmBuffer.copy(outPcm, 0, 0, numFrames * blockAlign);
+
+  // Apply cosine fade-out on the last fadeOutFrames (50-100ms) to ensure clean termination
+  if (numFrames > fadeOutFrames) {
+    const startFrame = numFrames - fadeOutFrames;
+    for (let f = 0; f < fadeOutFrames; f++) {
+      const frameIdx = startFrame + f;
+      const gain = 0.5 * (1 + Math.cos((Math.PI * f) / fadeOutFrames));
+      for (let ch = 0; ch < numChannels; ch++) {
+        const offset = (frameIdx * numChannels + ch) * 2;
+        const sampleVal = outPcm.readInt16LE(offset);
+        outPcm.writeInt16LE(Math.round(sampleVal * gain), offset);
+      }
+    }
+  }
+
+  // Trailing silence frames are 0, ensuring zero DC offset / no walkie-talkie release pop
+
+  // 44-byte standard RIFF header
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + outputPcmLength, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * blockAlign, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(16, 34); // 16-bit
+  header.write('data', 36);
+  header.writeUInt32LE(outputPcmLength, 40);
+
+  return Buffer.concat([header, outPcm]);
+}
+
+// High-fidelity spoken greeting introduction audio endpoint (serves studio WAV with 0ms delay)
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
@@ -108,7 +162,9 @@ app.get('/api/tts/greeting', async (req, res) => {
 
     const audioBase64 = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     if (audioBase64) {
-      return res.json({ audio: audioBase64, format: 'audio/pcm', lang });
+      const pcmBuffer = Buffer.from(audioBase64, 'base64');
+      const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 80, 30);
+      return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang });
     }
     res.status(500).json({ error: 'Failed to generate audio' });
   } catch (err) {
