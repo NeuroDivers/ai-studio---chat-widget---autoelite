@@ -33,7 +33,7 @@ import {
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
 import { fetchPlatformVoiceAudio } from '../platformVoice';
-import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget } from '../turnstile';
+import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget, resolveTurnstileHost } from '../turnstile';
 
 interface ChatMessage {
   id: string;
@@ -421,10 +421,10 @@ export const ChatWidget: React.FC = () => {
     );
   }, [dealer.name, language]);
 
-  // Warm the invisible Turnstile widget inside the chat shadow root.
+  // Warm the invisible Turnstile widget. The iframe stays in the light DOM.
   useEffect(() => {
     if (!directPlatform || !isOpen) return;
-    const host = turnstileHostRef.current;
+    const host = resolveTurnstileHost(turnstileHostRef.current);
     if (!host) return;
     void prepareTurnstile(host).catch(() => {
       /* A failed widget falls back to speechSynthesis when a mic reply is spoken. */
@@ -770,7 +770,7 @@ export const ChatWidget: React.FC = () => {
       }
     };
 
-    const host = turnstileHostRef.current;
+    const host = resolveTurnstileHost(turnstileHostRef.current);
     const platformAttempt = host
       ? obtainTurnstileToken(host)
         .then((turnstileToken) => {
@@ -1476,6 +1476,7 @@ export const ChatWidget: React.FC = () => {
               </div>
             </div>
 
+            <slot name="turnstile" />
             <div ref={turnstileHostRef} data-turnstile-action="voice" className="shrink-0" />
             <div className="flex items-center gap-1 text-gray-500 shrink-0">
               <button

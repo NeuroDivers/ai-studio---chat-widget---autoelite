@@ -82,7 +82,29 @@ function loadTurnstileScript(): Promise<void> {
   return scriptPromise;
 }
 
-/** Render the invisible widget once inside the chat shadow root. */
+/**
+ * Turnstile looks up its iframe with document.querySelector, which does not
+ * enter a shadow root. An iframe mounted inside the chat shadow is ignored
+ * ("unexpected source") and never produces a token. When the chat is in a
+ * shadow host, mount the widget as a light-DOM child and project it through
+ * the header slot so it stays in the chat and the parent page can see it.
+ */
+export function resolveTurnstileHost(fallback: HTMLElement | null): HTMLElement | null {
+  if (!fallback || typeof document === 'undefined') return fallback;
+  const root = fallback.getRootNode();
+  if (!(root instanceof ShadowRoot)) return fallback;
+  const host = root.host;
+  const existing = host.querySelector(':scope > [data-turnstile-action="voice"]');
+  if (existing instanceof HTMLElement) return existing;
+  const mount = document.createElement('div');
+  mount.setAttribute('data-turnstile-action', 'voice');
+  mount.slot = 'turnstile';
+  mount.style.pointerEvents = 'auto';
+  host.appendChild(mount);
+  return mount;
+}
+
+/** Render the invisible widget once. The secret stays on the platform. */
 export async function prepareTurnstile(host: HTMLElement): Promise<void> {
   await loadTurnstileScript();
   const api = window.turnstile;
