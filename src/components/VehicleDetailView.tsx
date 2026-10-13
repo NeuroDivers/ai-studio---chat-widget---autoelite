@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Vehicle } from '../types/inventory';
 import { useDealer } from '../dealerContext';
 import { fetchVehiclePhotos, galleryPhotos, stockLabel } from '../dealerPlatform';
@@ -198,53 +198,34 @@ function liveSpecs(vehicle: Vehicle, copy: (typeof COPY)[DetailLanguage]): { lab
   return specs;
 }
 
-function TestDriveAction({
-  vehicle,
-  language,
-  dealerId,
-  onSubmitTestDrive,
-  call,
+function clearBoxSize(element: HTMLElement | null) {
+  if (!element) return;
+  element.style.height = '';
+  element.style.minHeight = '';
+  element.style.maxHeight = '';
+}
+
+function TestDriveButton({
+  label,
+  buttonRef,
+  onClick,
 }: {
-  vehicle: Vehicle;
-  language: DetailLanguage;
-  dealerId: number;
-  onSubmitTestDrive?: (draft: TestDriveLeadDraft) => Promise<TestDriveLeadResult>;
-  call: React.ReactNode;
+  label: string;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
+  onClick: () => void;
 }) {
-  const copy = COPY[language];
-  const [booking, setBooking] = useState(false);
-
-  useEffect(() => {
-    setBooking(false);
-  }, [vehicle.id]);
-
-  if (booking) {
-    return (
-      <div className="min-w-0 space-y-2 pt-1">
-        <TestDriveForm
-          vehicle={vehicle}
-          language={language}
-          dealerId={dealerId}
-          onCancel={() => setBooking(false)}
-          onSubmit={onSubmitTestDrive ?? (async () => ({ ok: false, code: 'rejected' }))}
-        />
-        {call}
-      </div>
-    );
-  }
-
   return (
-    <div className="min-w-0 space-y-2 pt-1">
+    <div className="min-w-0 pt-1">
       <button
+        ref={buttonRef}
         type="button"
         data-lambert-test-drive=""
-        onClick={() => setBooking(true)}
+        onClick={onClick}
         className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
       >
         <Calendar className="h-4 w-4" />
-        <span>{copy.testDrive}</span>
+        <span>{label}</span>
       </button>
-      {call}
     </div>
   );
 }
@@ -268,6 +249,137 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
       <Phone className="h-3.5 w-3.5 text-gray-600" />
       <span>{copy.call(dealer.phone)}</span>
     </a>
+  ) : null;
+
+  const vehicleKey = String(vehicle.id ?? '');
+  const [trackedVehicle, setTrackedVehicle] = useState(vehicleKey);
+  const [booking, setBooking] = useState(false);
+  if (trackedVehicle !== vehicleKey) {
+    setTrackedVehicle(vehicleKey);
+    setBooking(false);
+  }
+
+  const specsWrapRef = useRef<HTMLDivElement>(null);
+  const openButtonRef = useRef<HTMLButtonElement>(null);
+  const scrollSnapshot = useRef<{ el: HTMLElement; top: number } | null>(null);
+  const wasOpen = useRef(false);
+
+  useEffect(() => {
+    if (!booking) {
+      if (wasOpen.current) openButtonRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    wasOpen.current = true;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setBooking(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [booking]);
+
+  useLayoutEffect(() => {
+    const wrap = specsWrapRef.current;
+    if (!booking || !wrap) {
+      clearBoxSize(wrap);
+      const snap = scrollSnapshot.current;
+      if (snap?.el.isConnected) snap.el.scrollTop = snap.top;
+      scrollSnapshot.current = null;
+      return;
+    }
+
+    const place = () => {
+      const currentWrap = specsWrapRef.current;
+      if (!currentWrap) return;
+      const body = currentWrap.closest('[data-lambert-detail-body]');
+      const dock = currentWrap.closest('[data-lambert-dock-detail]');
+      const gallery = currentWrap.parentElement?.querySelector('[data-lambert-detail-gallery]');
+      const sideBySide =
+        gallery instanceof HTMLElement &&
+        Math.abs(gallery.getBoundingClientRect().top - currentWrap.getBoundingClientRect().top) < 12;
+
+      if (body instanceof HTMLElement && sideBySide) {
+        if (!scrollSnapshot.current) scrollSnapshot.current = { el: body, top: body.scrollTop };
+        clearBoxSize(currentWrap);
+        return;
+      }
+
+      if (body instanceof HTMLElement) {
+        if (!scrollSnapshot.current) scrollSnapshot.current = { el: body, top: body.scrollTop };
+        body.scrollTop = scrollSnapshot.current.top;
+        const styles = getComputedStyle(body);
+        const padTop = parseFloat(styles.paddingTop) || 0;
+        const padBottom = parseFloat(styles.paddingBottom) || 0;
+        const bodyRect = body.getBoundingClientRect();
+        const contentTop = bodyRect.top + padTop;
+        const contentBottom = bodyRect.bottom - padBottom;
+        const contentHeight = Math.max(160, Math.floor(contentBottom - contentTop));
+        const galleryBottom = gallery instanceof HTMLElement ? gallery.getBoundingClientRect().bottom : contentTop;
+        const roomBelowGallery = Math.floor(contentBottom - galleryBottom);
+        // Keep the gallery still when the specs region already has room for the fields.
+        if (roomBelowGallery >= 340) {
+          const wrapTop = currentWrap.getBoundingClientRect().top;
+          const height = Math.max(160, Math.floor(contentBottom - Math.max(wrapTop, contentTop)));
+          currentWrap.style.height = `${height}px`;
+          currentWrap.style.minHeight = `${height}px`;
+          currentWrap.style.maxHeight = `${height}px`;
+          return;
+        }
+        currentWrap.style.height = `${contentHeight}px`;
+        currentWrap.style.minHeight = `${contentHeight}px`;
+        currentWrap.style.maxHeight = `${contentHeight}px`;
+        const delta = currentWrap.getBoundingClientRect().top - contentTop;
+        if (Math.abs(delta) > 1) body.scrollTop += delta;
+        return;
+      }
+
+      if (dock instanceof HTMLElement) {
+        if (!scrollSnapshot.current) scrollSnapshot.current = { el: dock, top: dock.scrollTop };
+        dock.scrollTop = scrollSnapshot.current.top;
+        const styles = getComputedStyle(dock);
+        const padTop = parseFloat(styles.paddingTop) || 0;
+        const padBottom = parseFloat(styles.paddingBottom) || 0;
+        const visible = Math.max(160, Math.floor(dock.clientHeight - padTop - padBottom));
+        const form = currentWrap.querySelector('form');
+        const needed = form instanceof HTMLElement ? form.offsetHeight + 4 : 340;
+        const height = Math.min(visible, Math.max(160, needed));
+        currentWrap.style.height = `${height}px`;
+        currentWrap.style.minHeight = `${height}px`;
+        currentWrap.style.maxHeight = `${height}px`;
+        const room = Math.floor(dock.getBoundingClientRect().bottom - padBottom - currentWrap.getBoundingClientRect().top);
+        if (room < height - 2) dock.scrollTop += height - room;
+      }
+    };
+
+    place();
+    const watch = wrap.closest('[data-lambert-detail-body], [data-lambert-dock-detail]');
+    const observer = new ResizeObserver(() => place());
+    if (watch instanceof Element) observer.observe(watch);
+    window.addEventListener('resize', place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', place);
+    };
+  }, [booking, vehicleKey, layout]);
+
+  const wrapClass = `lambert-detail-specs-wrap${booking ? ' is-booking' : ''}`;
+  const panel = booking ? (
+    <div
+      className="lambert-test-drive-panel"
+      data-lambert-test-drive-panel=""
+      role="dialog"
+      aria-labelledby="lambert-test-drive-title"
+    >
+      <TestDriveForm
+        vehicle={vehicle}
+        language={language}
+        dealerId={dealer.id || 2}
+        onCancel={() => setBooking(false)}
+        onSubmit={onSubmitTestDrive ?? (async () => ({ ok: false, code: 'rejected' }))}
+      />
+    </div>
   ) : null;
 
   if (layout === 'pane') {
@@ -295,37 +407,39 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
               <VehicleGallery vehicle={vehicle} alt={photoAlt} copy={copy} />
             </div>
 
-            <div className="lambert-detail-specs" data-lambert-detail-specs="">
-              <div className="border-b border-gray-100 pb-3">
-                <h2 className="text-2xl font-bold leading-tight text-gray-900">{title}</h2>
-                <div className="mt-1.5 text-2xl font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
-              </div>
-
-              <div className="@container">
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
-                  {specs.map((spec) => (
-                    <div key={spec.label} className={`min-w-0 ${spec.label === copy.vin ? 'col-span-2' : ''}`}>
-                      <dt className="text-[11px] font-medium text-gray-500">{spec.label}</dt>
-                      <dd className={`mt-0.5 text-sm font-semibold break-words text-gray-900 ${spec.label === copy.vin ? 'font-mono text-[13px] break-all' : ''} ${spec.label === copy.exterior || spec.label === copy.transmission ? 'capitalize' : ''}`}>{spec.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-
-              {vehicle.description ? (
-                <div className="space-y-1.5 rounded-xl border border-gray-200 bg-white p-3.5">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-gray-900">{copy.description}</h4>
-                  <p className="text-xs leading-relaxed text-gray-700">{vehicle.description}</p>
+            <div ref={specsWrapRef} className={wrapClass} data-lambert-detail-specs-wrap="">
+              <div className="lambert-detail-specs" data-lambert-detail-specs="" inert={booking}>
+                <div className="border-b border-gray-100 pb-3">
+                  <h2 className="text-2xl font-bold leading-tight text-gray-900">{title}</h2>
+                  <div className="mt-1.5 text-2xl font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
                 </div>
-              ) : null}
 
-              <TestDriveAction
-                vehicle={vehicle}
-                language={language}
-                dealerId={dealer.id || 2}
-                onSubmitTestDrive={onSubmitTestDrive}
-                call={callLink}
-              />
+                <div className="@container">
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    {specs.map((spec) => (
+                      <div key={spec.label} className={`min-w-0 ${spec.label === copy.vin ? 'col-span-2' : ''}`}>
+                        <dt className="text-[11px] font-medium text-gray-500">{spec.label}</dt>
+                        <dd className={`mt-0.5 text-sm font-semibold break-words text-gray-900 ${spec.label === copy.vin ? 'font-mono text-[13px] break-all' : ''} ${spec.label === copy.exterior || spec.label === copy.transmission ? 'capitalize' : ''}`}>{spec.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+
+                {vehicle.description ? (
+                  <div className="space-y-1.5 rounded-xl border border-gray-200 bg-white p-3.5">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-gray-900">{copy.description}</h4>
+                    <p className="text-xs leading-relaxed text-gray-700">{vehicle.description}</p>
+                  </div>
+                ) : null}
+
+                <TestDriveButton
+                  label={copy.testDrive}
+                  buttonRef={openButtonRef}
+                  onClick={() => setBooking(true)}
+                />
+                {callLink}
+              </div>
+              {panel}
             </div>
           </div>
         </div>
@@ -348,8 +462,8 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
         <span className="text-xs font-medium text-gray-500">{stockLabel(vehicle)}</span>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4 text-left">
-        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-gray-200 shadow-inner">
+      <div className="flex-1 space-y-4 overflow-y-auto p-4 text-left" data-lambert-dock-detail="">
+        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-gray-200 shadow-inner" data-lambert-dock-photo="">
           {vehicle.photo ? (
             <img src={vehicle.photo} alt={photoAlt} className="h-full w-full object-cover" />
           ) : (
@@ -367,6 +481,8 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           </div>
         </div>
 
+        <div ref={specsWrapRef} className={wrapClass} data-lambert-detail-specs-wrap="">
+        <div className="space-y-4" inert={booking}>
         <div className="border-b border-gray-100 pb-3">
           <div className="text-xs font-semibold tracking-wider text-gray-500 uppercase">
             {vehicle.body_label || vehicle.body_style}
@@ -450,13 +566,15 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           </div>
         </div>
 
-        <TestDriveAction
-          vehicle={vehicle}
-          language={language}
-          dealerId={dealer.id || 2}
-          onSubmitTestDrive={onSubmitTestDrive}
-          call={callLink}
+        <TestDriveButton
+          label={copy.testDrive}
+          buttonRef={openButtonRef}
+          onClick={() => setBooking(true)}
         />
+        {callLink}
+        </div>
+        {panel}
+        </div>
       </div>
     </div>
   );

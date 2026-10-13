@@ -1436,6 +1436,7 @@ export const ChatWidget: React.FC = () => {
       {/* 2. Chat Panel */}
       {isOpen && (
         <div
+          data-lambert-chat-panel=""
           className={`fixed z-50 bg-white shadow-2xl flex flex-col transition-all duration-200 text-gray-900 border border-gray-200 overflow-hidden ${
             isExpanded
               ? 'inset-0 w-full h-[100dvh] rounded-none'
@@ -1585,6 +1586,7 @@ export const ChatWidget: React.FC = () => {
 
           {/* Scrollable Conversation messages list */}
           <div
+            data-lambert-chat-thread=""
             className={
               showExpandedInventory
                 ? 'shrink-0 max-h-36 overflow-y-auto border-b border-gray-200 bg-gray-50/80 p-3 space-y-2'

@@ -94,6 +94,33 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* While the test-drive panel is open on a stacked split, keep the fields on screen. */
+@media (max-width: 799px) {
+  [data-lambert-chat-panel]:has([data-lambert-test-drive-panel]) [data-lambert-chat-thread] {
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-width: 0;
+    overflow: hidden;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .lambert-split:has([data-lambert-test-drive-panel]) .lambert-split-list {
+    flex: 0 0 auto;
+    max-height: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-top-width: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .lambert-split:has([data-lambert-test-drive-panel]) .lambert-split-detail {
+    flex: 1 1 auto;
+  }
+}
+
 @media (min-width: 800px) {
   .lambert-split {
     flex-direction: row;
@@ -135,14 +162,26 @@
 }
 
 .lambert-detail-gallery,
-.lambert-detail-specs {
+.lambert-detail-specs-wrap {
   min-width: 0;
+}
+
+/* Specs stay in flow. The test-drive panel covers this box, not the gallery. */
+.lambert-detail-specs-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lambert-detail-specs-wrap.is-booking {
+  overflow: hidden;
 }
 
 .lambert-detail-specs {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
 }
 
 .lambert-detail-specs > * {
@@ -277,10 +316,79 @@
     max-height: none;
   }
 
+  .lambert-detail-specs-wrap {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .lambert-detail-specs {
+    height: 100%;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
     padding-right: 0.25rem;
+  }
+
+  .lambert-detail-specs-wrap.is-booking .lambert-detail-specs {
+    overflow: hidden;
+  }
+}
+
+/* Test-drive panel: slide/fade over the specs column only. 240ms ease-out. */
+@keyframes lambert-test-drive-in {
+  from {
+    opacity: 0;
+    transform: translateX(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.lambert-test-drive-panel {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #fff;
+  padding: 0.125rem 0.125rem 0.5rem;
+  animation: lambert-test-drive-in 240ms ease-out both;
+  container-type: inline-size;
+  container-name: lambert-drive;
+}
+
+.lambert-test-drive-panel input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.lambert-test-drive-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+@container lambert-drive (min-width: 280px) {
+  .lambert-test-drive-pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lambert-test-drive-panel {
+    animation: none;
   }
 }
