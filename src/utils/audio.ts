@@ -505,8 +505,8 @@ export class AudioPlaybackController {
     this.isStreaming = false;
   }
 
-  // Play static greeting WAV file with persistent AudioContext, pristine 100ms fade-out,
-  // 60ms trailing zeros, and zero-pop termination.
+  // Play a static greeting WAV with a 150ms cosine fade, 200ms of appended silence,
+  // and a GainNode linear ramp to 0 over the last 150ms.
   async playAudioUrl(url: string): Promise<void> {
     this.interrupt();
     const ctx = this.getAudioContext();
@@ -522,8 +522,7 @@ export class AudioPlaybackController {
         const arrayBuf = await res.arrayBuffer();
         const decoded = await ctx.decodeAudioData(arrayBuf);
 
-        // Ensure decoded buffer has a pristine cosine fade-out (100ms) and 60ms of trailing silence
-        // to guarantee ZERO soundcard click/pop on all browsers and operating systems
+        // Cosine fade-out over the last 150ms of audible audio, plus 200ms of trailing silence.
         const fadeMs = 150;
         const silenceMs = 200;
         const sr = decoded.sampleRate;

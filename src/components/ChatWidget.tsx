@@ -141,10 +141,13 @@ const STRINGS = {
 
 export const WIDGET_VERSION = 'v2.4.0';
 
-function greetingFor(lang: Language, dealerName: string): string {
-  return lang === 'en'
-    ? `Hello and welcome to ${dealerName} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`
-    : `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?`;
+function greetingFor(lang: Language, dealerName: string, voice: 'Kore' | 'Puck' = 'Kore'): string {
+  const feminine = VOICE_PROFILES[voice].gender === 'female';
+  if (lang === 'en') {
+    return `Hello and welcome to ${dealerName} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`;
+  }
+  const role = feminine ? 'conseillère virtuelle' : 'conseiller virtuel';
+  return `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre ${role}. Comment puis-je vous aider aujourd'hui ?`;
 }
 
 const COLOR_TO_EN: Record<string, string> = {
@@ -302,6 +305,16 @@ export function chooseBrowserVoice<T extends BrowserVoice>(
   return ranked[0];
 }
 
+export interface VoiceProfile {
+  id: 'Kore' | 'Puck';
+  gender: 'female' | 'male';
+}
+
+export const VOICE_PROFILES: Record<'Kore' | 'Puck', VoiceProfile> = {
+  Kore: { id: 'Kore', gender: 'female' },
+  Puck: { id: 'Puck', gender: 'male' },
+};
+
 /**
  * Detects the language from the Automobile Lambert parent website:
  * 1. Read window.location.pathname on the parent page.
@@ -414,11 +427,11 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) =>
       prev.map((message) =>
         message.id === 'init-greeting'
-          ? { ...message, text: greetingFor(language, dealer.name) }
+          ? { ...message, text: greetingFor(language, dealer.name, selectedVoice) }
           : message
       )
     );
-  }, [dealer.name, language]);
+  }, [dealer.name, language, selectedVoice]);
 
   // Warm the invisible Turnstile widget. The iframe stays in the light DOM.
   useEffect(() => {
@@ -476,7 +489,7 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === 'init-greeting'
-          ? { ...m, text: greetingFor(newLang, dealer.name) }
+          ? { ...m, text: greetingFor(newLang, dealer.name, selectedVoice) }
           : m
       )
     );
@@ -486,7 +499,27 @@ export const ChatWidget: React.FC = () => {
       activeSessionRef.current.setLanguage(newLang);
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
-  }, [dealer.name, isPlayingIntro, language]);
+  }, [dealer.name, isPlayingIntro, language, selectedVoice]);
+
+  const handleVoiceChange = useCallback((newVoice: 'Kore' | 'Puck') => {
+    if (newVoice === selectedVoice) return;
+    if (isPlayingIntro) {
+      audioPlaybackRef.current?.interrupt();
+      setIsPlayingIntro(false);
+    }
+
+    setSelectedVoice(newVoice);
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === 'init-greeting'
+          ? { ...m, text: greetingFor(language, dealer.name, newVoice) }
+          : m
+      )
+    );
+
+    setLastDebugEvent(`Voix: ${newVoice}`);
+  }, [dealer.name, isPlayingIntro, language, selectedVoice]);
 
   // In-widget FR/EN stays until the parent site language itself changes.
   const lastSiteLanguageRef = useRef<Language>(languageFromSite());
@@ -584,6 +617,7 @@ export const ChatWidget: React.FC = () => {
     const voiceFile = selectedVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
     // Version the file so browsers drop the older greeting that clicked at the end.
     const directWavUrl = `/audio/greeting-${voiceFile}.wav?v=3`;
+
     try {
       await audioPlaybackRef.current?.playAudioUrl(directWavUrl);
       setIsPlayingIntro(false);
@@ -592,8 +626,9 @@ export const ChatWidget: React.FC = () => {
       console.warn('Direct static WAV play error:', urlErr);
     }
 
+    // 2. Fallback to API route with voice parameter if needed
     try {
-      const res = await fetch(`/api/tts/greeting?lang=${language}`);
+      const res = await fetch(`/api/tts/greeting?lang=${language}&voice=${selectedVoice}`);
       if (res.ok) {
         const data = await res.json();
         if (data.wavUrl) {
@@ -1445,6 +1480,7 @@ export const ChatWidget: React.FC = () => {
         >
           {/* Header */}
           <div className="bg-white border-b border-gray-200 px-3 py-2.5 sm:px-3.5 sm:py-3 flex items-center justify-between shrink-0 select-none gap-2">
+            {/* Dealer identity (title and status, unsquished) */}
             <div className="flex items-center gap-2.5 min-w-0 flex-1">
               <div className="w-8 h-8 rounded-full bg-[#991b1e] text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0">
                 AL
@@ -1481,8 +1517,7 @@ export const ChatWidget: React.FC = () => {
                 type="button"
                 onClick={() => {
                   const nextVoice = selectedVoice === 'Kore' ? 'Puck' : 'Kore';
-                  setSelectedVoice(nextVoice);
-                  setLastDebugEvent(`Voix: ${nextVoice}`);
+                  handleVoiceChange(nextVoice);
                 }}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
                 title={
@@ -1533,6 +1568,7 @@ export const ChatWidget: React.FC = () => {
                 <Volume2 className={`w-4 h-4 ${isPlayingIntro ? 'animate-bounce text-[#991b1e]' : ''}`} />
               </button>
 
+              {/* Expand / Maximize toggle (desktop only) */}
               <button
                 type="button"
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -1918,6 +1954,7 @@ export const ChatWidget: React.FC = () => {
               </button>
             </form>
 
+            {/* Discreet Widget Version Footer */}
             <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1.5 px-0.5 select-none font-sans">
               <span>{language === 'en' ? `${dealer.name} AI` : `IA ${dealer.name}`}</span>
               <span className="font-mono text-gray-400 font-medium tracking-tight">{WIDGET_VERSION}</span>

@@ -186,23 +186,36 @@ function createWavWithFade(
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
-    const wavPath = path.join(__dirname, 'public', 'audio', `greeting-${lang}.wav`);
+    const requestedVoice = (req.query.voice as string)?.toLowerCase() === 'puck' ? 'puck' : 'kore';
+    const voiceName = requestedVoice === 'puck' ? 'Puck' : 'Kore';
 
-    if (fs.existsSync(wavPath)) {
-      const audioBuffer = fs.readFileSync(wavPath);
+    const specificWav = path.join(__dirname, 'public', 'audio', `greeting-${requestedVoice}-${lang}.wav`);
+    const fallbackWav = path.join(__dirname, 'public', 'audio', `greeting-${lang}.wav`);
+
+    const targetWav = fs.existsSync(specificWav) ? specificWav : (fs.existsSync(fallbackWav) ? fallbackWav : null);
+
+    if (targetWav) {
+      const audioBuffer = fs.readFileSync(targetWav);
+      const wavUrl = fs.existsSync(specificWav)
+        ? `/audio/greeting-${requestedVoice}-${lang}.wav`
+        : `/audio/greeting-${lang}.wav`;
       return res.json({
         audio: audioBuffer.toString('base64'),
-        wavUrl: `/audio/greeting-${lang}.wav`,
+        wavUrl,
         format: 'audio/wav',
         lang,
+        voice: voiceName,
       });
     }
 
-    // Dynamic generation fallback with the crisp Kore voice
+    // Dynamic generation fallback when no studio WAV is on disk.
     const dealer = await getDealer();
+    const feminine = requestedVoice !== 'puck';
     const text = lang === 'en'
       ? `Hello and welcome to ${dealer.name} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`
-      : `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?`;
+      : (feminine
+          ? `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?`
+          : `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui?`);
 
     const ttsRes = await ai.models.generateContent({
       model: 'gemini-3.8-flash-tts',
@@ -213,7 +226,7 @@ app.get('/api/tts/greeting', async (req, res) => {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName } }
         }
       }
     });
@@ -222,7 +235,7 @@ app.get('/api/tts/greeting', async (req, res) => {
     if (audioBase64) {
       const pcmBuffer = Buffer.from(audioBase64, 'base64');
       const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 80, 30);
-      return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang });
+      return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang, voice: voiceName });
     }
     res.status(500).json({ error: 'Failed to generate audio' });
   } catch (err) {
