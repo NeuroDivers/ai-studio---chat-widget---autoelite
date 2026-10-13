@@ -129,22 +129,34 @@ function createWavWithFade(
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
-    const wavPath = path.join(__dirname, 'public', 'audio', `greeting-${lang}.wav`);
+    const requestedVoice = (req.query.voice as string)?.toLowerCase() === 'puck' ? 'puck' : 'kore';
+    const voiceName = requestedVoice === 'puck' ? 'Puck' : 'Kore';
 
-    if (fs.existsSync(wavPath)) {
-      const audioBuffer = fs.readFileSync(wavPath);
+    const specificWav = path.join(__dirname, 'public', 'audio', `greeting-${requestedVoice}-${lang}.wav`);
+    const fallbackWav = path.join(__dirname, 'public', 'audio', `greeting-${lang}.wav`);
+
+    const targetWav = fs.existsSync(specificWav) ? specificWav : (fs.existsSync(fallbackWav) ? fallbackWav : null);
+
+    if (targetWav) {
+      const audioBuffer = fs.readFileSync(targetWav);
+      const wavUrl = fs.existsSync(specificWav)
+        ? `/audio/greeting-${requestedVoice}-${lang}.wav`
+        : `/audio/greeting-${lang}.wav`;
       return res.json({
         audio: audioBuffer.toString('base64'),
-        wavUrl: `/audio/greeting-${lang}.wav`,
+        wavUrl,
         format: 'audio/wav',
         lang,
+        voice: voiceName,
       });
     }
 
-    // Dynamic generation fallback with crisp Kore voice
+    // Dynamic generation fallback with selected voice
     const text = lang === 'en'
       ? "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?"
-      : "Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?";
+      : (requestedVoice === 'puck'
+          ? "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui ?"
+          : "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?");
 
     const ttsRes = await ai.models.generateContent({
       model: 'gemini-3.8-flash-tts',
@@ -155,7 +167,7 @@ app.get('/api/tts/greeting', async (req, res) => {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          voiceConfig: { prebuiltVoiceConfig: { voiceName } }
         }
       }
     });
@@ -163,8 +175,8 @@ app.get('/api/tts/greeting', async (req, res) => {
     const audioBase64 = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     if (audioBase64) {
       const pcmBuffer = Buffer.from(audioBase64, 'base64');
-      const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 80, 30);
-      return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang });
+      const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 100, 60);
+      return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang, voice: voiceName });
     }
     res.status(500).json({ error: 'Failed to generate audio' });
   } catch (err) {
@@ -320,6 +332,7 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
         },
       },
       systemInstruction: `You are the bilingual (French and English) virtual voice advisor for Automobile Lambert, a certified car dealership in Laval, Quebec.
+${chosenVoice === 'Puck' ? "Your persona is Alex, a friendly and knowledgeable automotive sales advisor. In French, refer to yourself as 'conseiller virtuel' (masculine)." : "Your persona is Chloé, a warm and knowledgeable automotive sales advisor. In French, refer to yourself as 'conseillère virtuelle' (feminine)."}
 Contact: 1250 boul. Curé-Labelle, Laval, QC. Phone: (450) 555-0199. Hours: 9:00 AM to 6:00 PM Monday through Friday, 10:00 AM to 4:00 PM Saturday.
 
 VOICE, SPEED & ACCENT RULES:

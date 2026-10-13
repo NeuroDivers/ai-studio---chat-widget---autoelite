@@ -125,17 +125,100 @@ const STRINGS = {
 
 export const WIDGET_VERSION = 'v2.4.0';
 
+export interface VoiceProfile {
+  id: 'Kore' | 'Puck';
+  displayNameFr: string;
+  displayNameEn: string;
+  roleFr: string;
+  roleEn: string;
+  gender: 'female' | 'male';
+  greetingFr: string;
+  greetingEn: string;
+}
+
+export const VOICE_PROFILES: Record<'Kore' | 'Puck', VoiceProfile> = {
+  Kore: {
+    id: 'Kore',
+    displayNameFr: 'Chloé',
+    displayNameEn: 'Chloe',
+    roleFr: 'Conseillère virtuelle (Voix féminine)',
+    roleEn: 'Virtual Advisor (Female voice)',
+    gender: 'female',
+    greetingFr: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?",
+    greetingEn: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
+  },
+  Puck: {
+    id: 'Puck',
+    displayNameFr: 'Alex',
+    displayNameEn: 'Alex',
+    roleFr: 'Conseiller virtuel (Voix masculine)',
+    roleEn: 'Virtual Advisor (Male voice)',
+    gender: 'male',
+    greetingFr: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui ?",
+    greetingEn: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
+  },
+};
+
+/**
+ * Detects the language from the Automobile Lambert parent website:
+ * 1. Read window.location.pathname on the parent page.
+ * 2. First segment fr (/fr, /fr/, /fr/inventory, and so on) means French ('fr').
+ * 3. First segment en means English ('en').
+ * 4. First segment es means French ('fr'). The widget has only fr and en.
+ *    Do not map Spanish to English, and do not consult document.documentElement.lang on /es.
+ * 5. If there is no fr / en / es prefix (the brief moment on / before React Router replaces it with /fr),
+ *    use document.documentElement.lang only when its primary tag is fr or en.
+ *    Otherwise use French ('fr'), the dealership default.
+ */
+export function languageFromSite(): Language {
+  if (typeof window === 'undefined') {
+    return 'fr';
+  }
+
+  const pathname = window.location.pathname || '';
+  const segments = pathname.split('/').filter(Boolean);
+  const firstSegment = segments[0]?.toLowerCase();
+
+  if (firstSegment === 'fr') {
+    return 'fr';
+  }
+
+  if (firstSegment === 'en') {
+    return 'en';
+  }
+
+  if (firstSegment === 'es') {
+    return 'fr';
+  }
+
+  if (typeof document !== 'undefined' && document.documentElement) {
+    const docLang = (document.documentElement.lang || '').trim().toLowerCase();
+    const primaryTag = docLang.split(/[-_]/)[0];
+    if (primaryTag === 'fr') {
+      return 'fr';
+    }
+    if (primaryTag === 'en') {
+      return 'en';
+    }
+  }
+
+  return 'fr';
+}
+
 export const ChatWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
-  const [language, setLanguage] = useState<Language>('fr');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'init-greeting',
-      sender: 'assistant',
-      text: STRINGS.fr.greetingText,
-    },
-  ]);
+  const [language, setLanguage] = useState<Language>(() => languageFromSite());
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const initLang = languageFromSite();
+    return [
+      {
+        id: 'init-greeting',
+        sender: 'assistant',
+        text: STRINGS[initLang].greetingText,
+      },
+    ];
+  });
   const [inputText, setInputText] = useState<string>('');
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
 
@@ -152,7 +235,7 @@ export const ChatWidget: React.FC = () => {
   const [showDebug, setShowDebug] = useState<boolean>(false);
   const [micPermissionState, setMicPermissionState] = useState<string>('unknown');
   const [webSocketStatus, setWebSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Kore HD activée)');
+  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Chloé activée)');
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestFeedback, setMicTestFeedback] = useState<string>('');
 
@@ -215,7 +298,13 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === 'init-greeting'
-          ? { ...m, text: STRINGS[newLang].greetingText }
+          ? {
+              ...m,
+              text:
+                newLang === 'fr'
+                  ? VOICE_PROFILES[selectedVoice].greetingFr
+                  : VOICE_PROFILES[selectedVoice].greetingEn,
+            }
           : m
       )
     );
@@ -225,9 +314,119 @@ export const ChatWidget: React.FC = () => {
       activeSessionRef.current.setLanguage(newLang);
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
+  }, [isPlayingIntro, language, selectedVoice]);
+
+  // Voice switch handler (toggles between Chloé [Kore] and Alex [Puck])
+  const handleVoiceChange = useCallback((newVoice: 'Kore' | 'Puck') => {
+    if (isPlayingIntro) {
+      audioPlaybackRef.current?.interrupt();
+      setIsPlayingIntro(false);
+    }
+
+    setSelectedVoice(newVoice);
+
+    // Update initial greeting message text to match the advisor persona & gender
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === 'init-greeting'
+          ? {
+              ...m,
+              text:
+                language === 'fr'
+                  ? VOICE_PROFILES[newVoice].greetingFr
+                  : VOICE_PROFILES[newVoice].greetingEn,
+            }
+          : m
+      )
+    );
+
+    const profile = VOICE_PROFILES[newVoice];
+    setLastDebugEvent(`Voix activée: ${profile.displayNameFr} (${profile.roleFr})`);
   }, [isPlayingIntro, language]);
 
-  // Play high-fidelity spoken greeting introduction audio (crystal-clear Kore voice, zero static, normal pace)
+  // Keep track of the last site language applied to avoid resetting manual in-widget overrides
+  const lastSiteLanguageRef = useRef<Language>(languageFromSite());
+
+  // Subscribe to parent page URL (popstate, pushState, replaceState, MutationObserver)
+  useEffect(() => {
+    const checkSiteLanguage = () => {
+      const detected = languageFromSite();
+      if (detected !== lastSiteLanguageRef.current) {
+        lastSiteLanguageRef.current = detected;
+        handleLanguageChange(detected);
+      }
+    };
+
+    // Re-detect on mount and after first paint (handles React Router homepage replace from / to /fr)
+    checkSiteLanguage();
+    const t1 = setTimeout(checkSiteLanguage, 50);
+    const t2 = setTimeout(checkSiteLanguage, 250);
+
+    // 1. Popstate listener (browser back and forward)
+    window.addEventListener('popstate', checkSiteLanguage);
+
+    // 2. Wrap history.pushState and history.replaceState (React Router language changes don't fire popstate)
+    const originalPushState = window.history.pushState;
+    const originalReplaceState = window.history.replaceState;
+
+    window.history.pushState = function (...args: Parameters<typeof originalPushState>) {
+      const result = originalPushState.apply(this, args);
+      try {
+        checkSiteLanguage();
+      } catch (err) {
+        console.warn('Site lang check error in pushState:', err);
+      }
+      return result;
+    };
+
+    window.history.replaceState = function (...args: Parameters<typeof originalReplaceState>) {
+      const result = originalReplaceState.apply(this, args);
+      try {
+        checkSiteLanguage();
+      } catch (err) {
+        console.warn('Site lang check error in replaceState:', err);
+      }
+      return result;
+    };
+
+    // 3. MutationObserver on document.documentElement / #root / document.body (outside shadow root)
+    let observer: MutationObserver | null = null;
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        observer = new MutationObserver(() => {
+          checkSiteLanguage();
+        });
+        if (document.documentElement) {
+          observer.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['lang'],
+          });
+        }
+        const rootElement = document.getElementById('root') || document.body;
+        if (rootElement) {
+          observer.observe(rootElement, {
+            childList: true,
+            subtree: true,
+          });
+        }
+      } catch (err) {
+        console.warn('MutationObserver setup error:', err);
+      }
+    }
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      window.removeEventListener('popstate', checkSiteLanguage);
+      window.history.pushState = originalPushState;
+      window.history.replaceState = originalReplaceState;
+      if (observer) {
+        observer.disconnect();
+      }
+    };
+  }, [handleLanguageChange]);
+
+  // Play high-fidelity spoken greeting introduction audio for currently selected advisor voice
   const playGreetingIntro = useCallback(async () => {
     if (isPlayingIntro) {
       audioPlaybackRef.current?.interrupt();
@@ -238,8 +437,10 @@ export const ChatWidget: React.FC = () => {
     setIsPlayingIntro(true);
     await audioPlaybackRef.current?.resume();
 
+    const voiceFile = selectedVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
+    const directWavUrl = `/audio/greeting-${voiceFile}.wav?v=3`;
+
     // 1. Play pristine studio WAV file directly (0ms latency, zero static, clear natural voice)
-    const directWavUrl = `/audio/greeting-${language}.wav`;
     try {
       await audioPlaybackRef.current?.playAudioUrl(directWavUrl);
       setIsPlayingIntro(false);
@@ -248,9 +449,9 @@ export const ChatWidget: React.FC = () => {
       console.warn('Direct static WAV play error:', urlErr);
     }
 
-    // 2. Fallback to API route if needed
+    // 2. Fallback to API route with voice parameter if needed
     try {
-      const res = await fetch(`/api/tts/greeting?lang=${language}`);
+      const res = await fetch(`/api/tts/greeting?lang=${language}&voice=${selectedVoice}`);
       if (res.ok) {
         const data = await res.json();
         if (data.wavUrl) {
@@ -271,7 +472,7 @@ export const ChatWidget: React.FC = () => {
     }
 
     setIsPlayingIntro(false);
-  }, [isPlayingIntro, language]);
+  }, [isPlayingIntro, language, selectedVoice]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -398,7 +599,7 @@ export const ChatWidget: React.FC = () => {
       const session = await startVoiceSession({
         onReady: () => {
           setWebSocketStatus('connected');
-          setLastDebugEvent(`Gemini Live connecté (${selectedVoice} - ${language.toUpperCase()})`);
+          setLastDebugEvent(`Gemini Live connecté (${VOICE_PROFILES[selectedVoice].displayNameFr} - ${language.toUpperCase()})`);
         },
         onAudioChunk: (pcm24Base64) => {
           hasReceivedModelAudioRef.current = true;
@@ -791,24 +992,31 @@ export const ChatWidget: React.FC = () => {
 
             {/* Header controls (compact & uncluttered) */}
             <div className="flex items-center gap-1 text-gray-500 shrink-0">
-              {/* Voice Selector: Compact toggle pill */}
+              {/* Voice Selector: Friendly advisor voice toggle (Chloé & Alex) */}
               <button
                 type="button"
                 onClick={() => {
                   const nextVoice = selectedVoice === 'Kore' ? 'Puck' : 'Kore';
-                  setSelectedVoice(nextVoice);
-                  setLastDebugEvent(`Voix: ${nextVoice}`);
+                  handleVoiceChange(nextVoice);
                 }}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
                 title={
                   language === 'en'
-                    ? `Voice: ${selectedVoice} (Click to toggle)`
-                    : `Voix : ${selectedVoice} (Cliquez pour changer)`
+                    ? `Advisor Voice: ${VOICE_PROFILES[selectedVoice].displayNameEn} (${VOICE_PROFILES[selectedVoice].roleEn}) • Click to switch to ${VOICE_PROFILES[selectedVoice === 'Kore' ? 'Puck' : 'Kore'].displayNameEn}`
+                    : `Voix du conseiller : ${VOICE_PROFILES[selectedVoice].displayNameFr} (${VOICE_PROFILES[selectedVoice].roleFr}) • Cliquer pour choisir ${VOICE_PROFILES[selectedVoice === 'Kore' ? 'Puck' : 'Kore'].displayNameFr}`
                 }
-                aria-label={`Voix ${selectedVoice}`}
+                aria-label={
+                  language === 'en'
+                    ? `Voice: ${VOICE_PROFILES[selectedVoice].displayNameEn}`
+                    : `Voix : ${VOICE_PROFILES[selectedVoice].displayNameFr}`
+                }
               >
                 <Mic className="w-3 h-3 text-[#991b1e]" />
-                <span>{selectedVoice}</span>
+                <span>
+                  {language === 'en'
+                    ? VOICE_PROFILES[selectedVoice].displayNameEn
+                    : VOICE_PROFILES[selectedVoice].displayNameFr}
+                </span>
               </button>
 
               {/* Bilingual Language Switcher [ FR | EN ] */}
