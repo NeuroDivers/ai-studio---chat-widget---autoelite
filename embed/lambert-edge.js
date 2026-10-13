@@ -1,4 +1,4 @@
-const SOURCE_COMMIT = "1739886153c35f4f1c5ae4d918993b73af24e6d4";
+const SOURCE_COMMIT = "56808665162c9644ab82f50a64787496c0de4f7c";
 const SOURCE_ROOT = `https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/${SOURCE_COMMIT}`;
 const CHAT_URL = `${SOURCE_ROOT}/embed/lambert-chat.js`;
 const ORIGIN = "https://automobile-richard-lambert.pages.dev";
