@@ -10,8 +10,6 @@ import {
   Volume2,
   Sparkles,
   Loader2,
-  Activity,
-  Bug,
   AlertCircle,
   CheckCircle,
   Square,
@@ -45,7 +43,7 @@ type VoiceMode = 'idle' | 'listening' | 'thinking' | 'speaking';
 const STRINGS = {
   fr: {
     dealerName: 'Automobile Lambert',
-    onlineAdvisor: 'Conseiller virtuel en ligne',
+    onlineAdvisor: 'Conseillère en ligne',
     greetingText: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?",
     listenGreeting: 'Écouter la présentation vocale',
     stopGreeting: 'Arrêter la présentation',
@@ -85,7 +83,7 @@ const STRINGS = {
   },
   en: {
     dealerName: 'Automobile Lambert',
-    onlineAdvisor: 'Virtual sales advisor online',
+    onlineAdvisor: 'Advisor online',
     greetingText: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
     listenGreeting: 'Listen to spoken greeting',
     stopGreeting: 'Stop greeting',
@@ -124,6 +122,8 @@ const STRINGS = {
     voiceMessageBadge: 'Voice message',
   },
 };
+
+export const WIDGET_VERSION = 'v2.4.0';
 
 export const ChatWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
@@ -753,82 +753,70 @@ export const ChatWidget: React.FC = () => {
           className={`fixed z-50 bg-white shadow-2xl flex flex-col transition-all duration-200 text-gray-900 border border-gray-200 overflow-hidden ${
             isExpanded
               ? 'inset-0 w-full h-[100dvh] rounded-none'
-              : 'inset-0 sm:inset-auto sm:bottom-5 sm:right-5 sm:w-[440px] sm:h-[660px] sm:max-h-[calc(100dvh-2.5rem)] sm:rounded-2xl w-full h-[100dvh]'
+              : 'inset-0 sm:inset-auto sm:bottom-5 sm:right-5 sm:w-[450px] sm:h-[660px] sm:max-h-[calc(100dvh-2.5rem)] sm:rounded-2xl w-full h-[100dvh]'
           }`}
         >
           {/* Header */}
-          <div className="bg-white border-b border-gray-200 px-3.5 py-3 flex items-center justify-between shrink-0 select-none">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-full bg-[#991b1e] text-white flex items-center justify-center font-black text-sm shadow-xs">
+          <div className="bg-white border-b border-gray-200 px-3 py-2.5 sm:px-3.5 sm:py-3 flex items-center justify-between shrink-0 select-none gap-2">
+            {/* Dealer identity (title and status, unsquished) */}
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-full bg-[#991b1e] text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0">
                 AL
               </div>
-              <div className="text-left">
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-sm text-gray-900 leading-tight">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <h3 className="font-bold text-sm text-gray-900 leading-tight whitespace-nowrap truncate">
                     {t.dealerName}
                   </h3>
                   {/* Real-time Voice Status Pill in Header */}
                   {voiceStatus === 'listening' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-[#991b1e] animate-pulse">
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-[#991b1e] animate-pulse shrink-0">
                       <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />
                       {t.listeningBadge}
                     </span>
                   )}
                   {voiceStatus === 'thinking' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 shrink-0">
                       <Loader2 className="w-2.5 h-2.5 animate-spin" />
                       {t.thinkingBadge}
                     </span>
                   )}
                 </div>
-                <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                  {t.onlineAdvisor}
+                <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1.5 mt-0.5 whitespace-nowrap truncate">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block shrink-0" />
+                  <span>{t.onlineAdvisor}</span>
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-1 text-gray-500">
-              {/* Voice Selector [ Kore | Puck ] */}
-              <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold mr-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedVoice('Kore');
-                    setLastDebugEvent('Voix: Kore (Féminine, naturelle)');
-                  }}
-                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer text-[11px] ${
-                    selectedVoice === 'Kore'
-                      ? 'bg-white text-[#991b1e] shadow-xs'
-                      : 'text-gray-500 hover:text-gray-900'
-                  }`}
-                  title="Voix Kore (Féminine, claire et naturelle)"
-                >
-                  Kore
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedVoice('Puck');
-                    setLastDebugEvent('Voix: Puck (Masculine, dynamique)');
-                  }}
-                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer text-[11px] ${
-                    selectedVoice === 'Puck'
-                      ? 'bg-white text-[#991b1e] shadow-xs'
-                      : 'text-gray-500 hover:text-gray-900'
-                  }`}
-                  title="Voix Puck (Masculine, dynamique)"
-                >
-                  Puck
-                </button>
-              </div>
+            {/* Header controls (compact & uncluttered) */}
+            <div className="flex items-center gap-1 text-gray-500 shrink-0">
+              {/* Voice Selector: Compact toggle pill */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVoice = selectedVoice === 'Kore' ? 'Puck' : 'Kore';
+                  setSelectedVoice(nextVoice);
+                  setLastDebugEvent(`Voix: ${nextVoice}`);
+                }}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
+                title={
+                  language === 'en'
+                    ? `Voice: ${selectedVoice} (Click to toggle)`
+                    : `Voix : ${selectedVoice} (Cliquez pour changer)`
+                }
+                aria-label={`Voix ${selectedVoice}`}
+              >
+                <Mic className="w-3 h-3 text-[#991b1e]" />
+                <span>{selectedVoice}</span>
+              </button>
 
               {/* Bilingual Language Switcher [ FR | EN ] */}
-              <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold mr-1">
+              <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold shrink-0">
                 <button
                   type="button"
                   onClick={() => handleLanguageChange('fr')}
-                  className={`px-2 py-0.5 rounded-md transition-all cursor-pointer ${
+                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer ${
                     language === 'fr'
                       ? 'bg-white text-[#991b1e] shadow-xs'
                       : 'text-gray-500 hover:text-gray-900'
@@ -840,7 +828,7 @@ export const ChatWidget: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleLanguageChange('en')}
-                  className={`px-2 py-0.5 rounded-md transition-all cursor-pointer ${
+                  className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer ${
                     language === 'en'
                       ? 'bg-white text-[#991b1e] shadow-xs'
                       : 'text-gray-500 hover:text-gray-900'
@@ -855,46 +843,18 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onClick={playGreetingIntro}
-                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-[#991b1e] cursor-pointer"
+                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-[#991b1e] cursor-pointer shrink-0"
                 title={isPlayingIntro ? t.stopGreeting : t.listenGreeting}
                 aria-label={t.listenGreeting}
               >
                 <Volume2 className={`w-4 h-4 ${isPlayingIntro ? 'animate-bounce text-[#991b1e]' : ''}`} />
               </button>
 
-              {/* Debug / Diagnostic Toggle */}
-              <button
-                type="button"
-                onClick={() => setShowDebug(!showDebug)}
-                className={`p-1.5 rounded-lg transition-colors cursor-pointer text-xs flex items-center gap-1 ${
-                  showDebug
-                    ? 'bg-amber-100 text-amber-800 font-bold'
-                    : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
-                }`}
-                title="Afficher les outils de diagnostic audio"
-                aria-label="Diagnostic"
-              >
-                <Bug className="w-4 h-4" />
-              </button>
-
-              {/* Fullscreen Voice Visualizer Toggle */}
-              {voiceStatus === 'listening' && (
-                <button
-                  type="button"
-                  onClick={() => setShowVoicePulseOverlay(!showVoicePulseOverlay)}
-                  className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-[#991b1e] cursor-pointer"
-                  title="Plein écran onde vocale"
-                  aria-label="Plein écran onde vocale"
-                >
-                  <Radio className="w-4 h-4 animate-pulse" />
-                </button>
-              )}
-
-              {/* Expand / Maximize toggle */}
+              {/* Expand / Maximize toggle (desktop only) */}
               <button
                 type="button"
                 onClick={() => setIsExpanded(!isExpanded)}
-                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors hover:text-gray-800 cursor-pointer"
+                className="hidden sm:inline-flex p-1.5 hover:bg-gray-100 rounded-lg transition-colors hover:text-gray-800 cursor-pointer shrink-0"
                 title={isExpanded ? 'Réduire' : 'Agrandir en plein écran'}
                 aria-label={isExpanded ? 'Réduire' : 'Agrandir'}
               >
@@ -912,7 +872,7 @@ export const ChatWidget: React.FC = () => {
                   cancelListening();
                   setIsOpen(false);
                 }}
-                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors hover:text-gray-800 cursor-pointer"
+                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors hover:text-gray-800 cursor-pointer shrink-0"
                 title="Fermer"
                 aria-label="Fermer le clavardage"
               >
@@ -921,96 +881,7 @@ export const ChatWidget: React.FC = () => {
             </div>
           </div>
 
-          {/* Diagnostic & Debug Bar */}
-          {showDebug && (
-            <div className="bg-amber-50/90 border-b border-amber-200 p-3 text-xs space-y-2 shrink-0 animate-in slide-in-from-top-1 duration-150">
-              <div className="flex items-center justify-between font-bold text-amber-950">
-                <span className="flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5 text-amber-700" />
-                  {t.debugTitle}
-                </span>
-                <span className="font-mono text-[10px] text-amber-700">
-                  WS: {webSocketStatus} | Lang: {language.toUpperCase()}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-700">
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500">Micro:</span>
-                  <span className={`font-semibold ${micPermissionState === 'granted' ? 'text-emerald-700' : 'text-amber-700'}`}>
-                    {micPermissionState}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500">Voix IA:</span>
-                  <span className="font-semibold text-emerald-700">Aoede Studio 24kHz</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500">Paquets:</span>
-                  <span className="font-mono font-bold text-gray-900">{chunksSent}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500">Volume:</span>
-                  <span className="font-mono font-bold text-gray-900">{Math.round(volumeLevel * 100)}%</span>
-                </div>
-              </div>
-
-              {/* Volume VU meter visualizer */}
-              <div className="space-y-0.5">
-                <div className="flex justify-between text-[10px] text-gray-500">
-                  <span>VU-Mètre Direct</span>
-                  <span className="font-mono">{Math.round(volumeLevel * 100)}%</span>
-                </div>
-                <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-75 ${
-                      volumeLevel > 0.05 ? 'bg-emerald-500' : 'bg-[#991b1e]'
-                    }`}
-                    style={{ width: `${Math.min(100, Math.max(0, volumeLevel * 300))}%` }}
-                  />
-                </div>
-              </div>
-
-              {lastDebugEvent && (
-                <div className="text-[10px] text-gray-600 font-mono truncate">
-                  Dernier état: {lastDebugEvent}
-                </div>
-              )}
-
-              {micTestFeedback && (
-                <div className="p-2 rounded-lg bg-white border border-amber-200 text-[11px] text-gray-800">
-                  {micTestFeedback}
-                </div>
-              )}
-
-              <div className="flex items-center gap-2 pt-0.5 flex-wrap">
-                <button
-                  type="button"
-                  onClick={runMicSelfTest}
-                  disabled={isTestingMic}
-                  className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 active:scale-95 text-white font-bold text-[11px] transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {isTestingMic ? t.micTestTesting : t.micTestTitle}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runSimulatedVoiceQuery('Avez-vous un VUS rouge ?')}
-                  className="px-2 py-1 rounded bg-white hover:bg-gray-100 border border-amber-300 text-amber-900 font-semibold text-[11px] transition-all cursor-pointer"
-                >
-                  {t.simulateFr}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runSimulatedVoiceQuery('Do you have a red SUV?')}
-                  className="px-2 py-1 rounded bg-white hover:bg-gray-100 border border-amber-300 text-amber-900 font-semibold text-[11px] transition-all cursor-pointer"
-                >
-                  {t.simulateEn}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Full-screen VoicePulseScreen overlay if toggled */}
+              {/* Full-screen VoicePulseScreen overlay if toggled */}
           {showVoicePulseOverlay && (
             <VoicePulseScreen
               transcript={liveTranscript}
@@ -1347,6 +1218,12 @@ export const ChatWidget: React.FC = () => {
                 )}
               </button>
             </form>
+
+            {/* Discreet Widget Version Footer */}
+            <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1.5 px-0.5 select-none font-sans">
+              <span>{language === 'en' ? 'Automobile Lambert AI' : 'IA Automobile Lambert'}</span>
+              <span className="font-mono text-gray-400 font-medium tracking-tight">{WIDGET_VERSION}</span>
+            </div>
           </div>
         </div>
       )}
