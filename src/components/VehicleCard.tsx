@@ -47,8 +47,9 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
       role="button"
       tabIndex={0}
       aria-pressed={selected}
+      style={selected ? { border: '3px solid #991b1e' } : undefined}
       className={`bg-white rounded-xl border overflow-hidden shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer flex flex-col group text-left ${
-        selected ? 'border-[#991b1e] ring-2 ring-[#991b1e]' : 'border-gray-200'
+        selected ? 'border-[#991b1e]' : 'border-gray-200'
       }`}
     >
       {/* Photo on top, text underneath */}
