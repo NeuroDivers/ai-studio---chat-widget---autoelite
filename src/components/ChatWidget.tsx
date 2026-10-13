@@ -34,6 +34,7 @@ import {
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
 import { fetchPlatformVoiceAudio } from '../platformVoice';
 import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget, resolveTurnstileHost } from '../turnstile';
+import { chatTurnstileHost, submitTestDriveLead, TestDriveLeadDraft } from '../testDriveLead';
 
 interface ChatMessage {
   id: string;
@@ -86,7 +87,6 @@ const STRINGS = {
     singleMatch: 'Voici le véhicule disponible correspondant à votre recherche :',
     multipleMatch: (n: number) => `Voici les ${n} véhicules disponibles correspondant à votre recherche :`,
     noMatch: 'Aucun véhicule disponible ne correspond à votre recherche. Souhaitez-vous explorer un autre type de véhicule comme un VUS, une berline ou un camion ?',
-    testDriveRequest: (v: Vehicle) => `Je souhaite réserver un essai routier pour le ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
     testDriveBooked: (v: Vehicle, phone: string) => `Excellente décision ! Notre équipe commerciale d'Automobile Lambert a bien noté votre demande pour le ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). Un conseiller vous contactera dans les plus brefs délais.${phone ? ` Vous pouvez aussi nous appeler au ${phone}.` : ''}`,
     defaultAiFallback: "Bonjour ! Je suis à votre service chez Automobile Lambert. Cherchez-vous un VUS rouge, une berline ou un camion ?",
     micTestTitle: '🎙️ Tester micro 3s',
@@ -127,7 +127,6 @@ const STRINGS = {
     singleMatch: 'Here is the available vehicle matching your search:',
     multipleMatch: (n: number) => `Here are the ${n} available vehicles matching your search:`,
     noMatch: 'No available vehicles match your search. Would you like to explore another vehicle type such as an SUV, sedan, or truck?',
-    testDriveRequest: (v: Vehicle) => `I would like to book a test drive for the ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
     testDriveBooked: (v: Vehicle, phone: string) => `Great choice! Our sales team at Automobile Lambert has received your test drive request for the ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). An advisor will contact you shortly.${phone ? ` You can also reach us at ${phone}.` : ''}`,
     defaultAiFallback: "Hello! I'm here to help at Automobile Lambert. Are you looking for a red SUV, a sedan, or a truck?",
     micTestTitle: '🎙️ Test Mic 3s',
@@ -1395,25 +1394,23 @@ export const ChatWidget: React.FC = () => {
   const expandedVehicles = latestResultVehicles(messages);
   const showExpandedInventory = isExpanded && expandedVehicles.length > 0;
 
-  const requestVehicleInfo = (vehicle: Vehicle) => {
-    setSelectedVehicle(null);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: 'req-' + Date.now(),
-        sender: 'user',
-        text: t.testDriveRequest(vehicle),
-      },
-      {
-        id: 'rep-' + Date.now(),
-        sender: 'assistant',
-        text:
-          language === 'en'
-            ? `Great choice! ${dealer.name} has received your test drive request for the ${vehicle.year} ${vehicle.make} ${vehicle.model}. An advisor will contact you shortly. You can also reach us at ${dealer.phone}.`
-            : `Excellente décision ! ${dealer.name} a bien noté votre demande d'essai pour le ${vehicle.year} ${vehicle.make} ${vehicle.model}. Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au ${dealer.phone}.`,
-      },
-    ]);
-  };
+  const submitTestDrive = useCallback(
+    async (draft: TestDriveLeadDraft) => {
+      const result = await submitTestDriveLead(draft, chatTurnstileHost(turnstileHostRef.current));
+      if (result.ok) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: 'td-' + Date.now(),
+            sender: 'assistant',
+            text: STRINGS[draft.language].testDriveBooked(draft.vehicle, dealer.phone),
+          },
+        ]);
+      }
+      return result;
+    },
+    [dealer.phone],
+  );
 
   return (
     <>
@@ -1582,7 +1579,7 @@ export const ChatWidget: React.FC = () => {
               vehicle={selectedVehicle}
               language={language}
               onBack={() => setSelectedVehicle(null)}
-              onRequestInfo={requestVehicleInfo}
+              onSubmitTestDrive={submitTestDrive}
             />
           )}
 
@@ -1679,7 +1676,7 @@ export const ChatWidget: React.FC = () => {
               resultsLabel={t.vehicleResults(expandedVehicles.length)}
               onSelect={(car) => setSelectedVehicle(car)}
               onBack={() => setSelectedVehicle(null)}
-              onRequestInfo={requestVehicleInfo}
+              onSubmitTestDrive={submitTestDrive}
             />
           )}
 

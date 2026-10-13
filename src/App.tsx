@@ -6,6 +6,7 @@ import { Vehicle } from './types/inventory';
 import { DealerProfile } from './dealerPlatform';
 import { DealerProvider } from './dealerContext';
 import { loadDealerContext, loadInventory } from './portalApi';
+import { submitTestDriveLead } from './testDriveLead';
 
 export default function App() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -49,10 +50,7 @@ export default function App() {
             <VehicleDetailView
               vehicle={selectedPageVehicle}
               onBack={() => setSelectedPageVehicle(null)}
-              onRequestInfo={(v) => {
-                setSelectedPageVehicle(null);
-                // The floating widget can be used to chat
-              }}
+              onSubmitTestDrive={(draft) => submitTestDriveLead(draft)}
             />
           </div>
         </div>

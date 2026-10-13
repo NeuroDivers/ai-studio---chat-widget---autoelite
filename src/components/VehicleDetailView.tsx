@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { Vehicle } from '../types/inventory';
 import { useDealer } from '../dealerContext';
 import { fetchVehiclePhotos, galleryPhotos, stockLabel } from '../dealerPlatform';
+import { TestDriveLeadDraft, TestDriveLeadResult } from '../testDriveLead';
 import { formatCadPrice, formatMileage } from './VehicleCard';
+import { TestDriveForm } from './TestDriveForm';
 import { ArrowLeft, ChevronLeft, ChevronRight, Gauge, Tag, Zap, Cog, Fuel, Compass, Calendar, Phone, CheckCircle2 } from 'lucide-react';
 
 type DetailLanguage = 'fr' | 'en';
@@ -10,7 +12,7 @@ type DetailLanguage = 'fr' | 'en';
 interface VehicleDetailViewProps {
   vehicle: Vehicle;
   onBack: () => void;
-  onRequestInfo?: (vehicle: Vehicle) => void;
+  onSubmitTestDrive?: (draft: TestDriveLeadDraft) => Promise<TestDriveLeadResult>;
   language?: DetailLanguage;
   /** overlay covers the docked chat. pane sits in the expanded split column. */
   layout?: 'overlay' | 'pane';
@@ -196,10 +198,61 @@ function liveSpecs(vehicle: Vehicle, copy: (typeof COPY)[DetailLanguage]): { lab
   return specs;
 }
 
+function TestDriveAction({
+  vehicle,
+  language,
+  dealerId,
+  onSubmitTestDrive,
+  call,
+}: {
+  vehicle: Vehicle;
+  language: DetailLanguage;
+  dealerId: number;
+  onSubmitTestDrive?: (draft: TestDriveLeadDraft) => Promise<TestDriveLeadResult>;
+  call: React.ReactNode;
+}) {
+  const copy = COPY[language];
+  const [booking, setBooking] = useState(false);
+
+  useEffect(() => {
+    setBooking(false);
+  }, [vehicle.id]);
+
+  if (booking) {
+    return (
+      <div className="min-w-0 space-y-2 pt-1">
+        <TestDriveForm
+          vehicle={vehicle}
+          language={language}
+          dealerId={dealerId}
+          onCancel={() => setBooking(false)}
+          onSubmit={onSubmitTestDrive ?? (async () => ({ ok: false, code: 'rejected' }))}
+        />
+        {call}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 space-y-2 pt-1">
+      <button
+        type="button"
+        data-lambert-test-drive=""
+        onClick={() => setBooking(true)}
+        className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
+      >
+        <Calendar className="h-4 w-4" />
+        <span>{copy.testDrive}</span>
+      </button>
+      {call}
+    </div>
+  );
+}
+
 export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
   vehicle,
   onBack,
-  onRequestInfo,
+  onSubmitTestDrive,
   language = 'fr',
   layout = 'overlay',
 }) => {
@@ -207,6 +260,15 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
   const copy = COPY[language];
   const title = vehicleTitle(vehicle);
   const photoAlt = title || 'Vehicle';
+  const callLink = dealer.phone ? (
+    <a
+      href={dealer.phoneHref || undefined}
+      className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-800 transition-colors hover:bg-gray-200"
+    >
+      <Phone className="h-3.5 w-3.5 text-gray-600" />
+      <span>{copy.call(dealer.phone)}</span>
+    </a>
+  ) : null;
 
   if (layout === 'pane') {
     const specs = liveSpecs(vehicle, copy);
@@ -257,25 +319,13 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
                 </div>
               ) : null}
 
-              <div className="space-y-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => onRequestInfo?.(vehicle)}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
-                >
-                  <Calendar className="h-4 w-4" />
-                  <span>{copy.testDrive}</span>
-                </button>
-                {dealer.phone ? (
-                  <a
-                    href={dealer.phoneHref || undefined}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-800 transition-colors hover:bg-gray-200"
-                  >
-                    <Phone className="h-3.5 w-3.5 text-gray-600" />
-                    <span>{copy.call(dealer.phone)}</span>
-                  </a>
-                ) : null}
-              </div>
+              <TestDriveAction
+                vehicle={vehicle}
+                language={language}
+                dealerId={dealer.id || 2}
+                onSubmitTestDrive={onSubmitTestDrive}
+                call={callLink}
+              />
             </div>
           </div>
         </div>
@@ -400,26 +450,13 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           </div>
         </div>
 
-        <div className="space-y-2 pt-2">
-          <button
-            type="button"
-            onClick={() => onRequestInfo?.(vehicle)}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
-          >
-            <Calendar className="h-4 w-4" />
-            <span>{copy.testDrive}</span>
-          </button>
-
-          {dealer.phone ? (
-            <a
-              href={dealer.phoneHref || undefined}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-800 transition-colors hover:bg-gray-200"
-            >
-              <Phone className="h-3.5 w-3.5 text-gray-600" />
-              <span>{copy.call(dealer.phone)}</span>
-            </a>
-          ) : null}
-        </div>
+        <TestDriveAction
+          vehicle={vehicle}
+          language={language}
+          dealerId={dealer.id || 2}
+          onSubmitTestDrive={onSubmitTestDrive}
+          call={callLink}
+        />
       </div>
     </div>
   );

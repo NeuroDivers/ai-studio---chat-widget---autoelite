@@ -1,5 +1,6 @@
 import React from 'react';
 import { Vehicle } from '../types/inventory';
+import { TestDriveLeadDraft, TestDriveLeadResult } from '../testDriveLead';
 import { VehicleCard } from './VehicleCard';
 import { VehicleDetailView } from './VehicleDetailView';
 
@@ -10,7 +11,7 @@ interface ExpandedInventoryProps {
   resultsLabel: string;
   onSelect: (vehicle: Vehicle) => void;
   onBack: () => void;
-  onRequestInfo?: (vehicle: Vehicle) => void;
+  onSubmitTestDrive?: (draft: TestDriveLeadDraft) => Promise<TestDriveLeadResult>;
 }
 
 function ResultGrid({
@@ -20,7 +21,7 @@ function ResultGrid({
   resultsLabel,
   onSelect,
   rows = false,
-}: Omit<ExpandedInventoryProps, 'onBack' | 'onRequestInfo'> & { rows?: boolean }) {
+}: Omit<ExpandedInventoryProps, 'onBack' | 'onSubmitTestDrive'> & { rows?: boolean }) {
   return (
     <>
       <div className="shrink-0 px-3 pt-3 text-[11px] font-bold uppercase tracking-wider text-gray-500">
@@ -53,7 +54,7 @@ export const ExpandedInventory: React.FC<ExpandedInventoryProps> = ({
   resultsLabel,
   onSelect,
   onBack,
-  onRequestInfo,
+  onSubmitTestDrive,
 }) => {
   if (!selectedVehicle) {
     return (
@@ -87,7 +88,7 @@ export const ExpandedInventory: React.FC<ExpandedInventoryProps> = ({
           language={language}
           layout="pane"
           onBack={onBack}
-          onRequestInfo={onRequestInfo}
+          onSubmitTestDrive={onSubmitTestDrive}
         />
       </div>
     </div>
