@@ -160,17 +160,29 @@ export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<
 
 /**
  * Portal Hook: Live session token & connection
- * 
+ *
  * The dealer site mints a short-lived Gemini Live token with:
  * POST https://api.autoelite.io/api/ai-proxy/gemini-live?ephemeral=1
  * body: { "dealerId": 2, "useEphemeral": true }
- * That route expects the dealer's Turnstile check, so this applet keeps the
- * local /api/live bridge. The bridge is grounded with the live Lambert inventory.
+ * That route expects the dealer's Turnstile check, so the Studio server keeps a
+ * local /api/live bridge. The live dealer embed has no such socket: it must not
+ * open one, and a failed handshake must not reconnect.
  */
 export async function startVoiceSession(
   callbacks: LiveVoiceSessionCallbacks,
   language: 'fr' | 'en' = 'fr',
   voice: 'Kore' | 'Puck' = 'Kore'
+): Promise<LiveVoiceSession> {
+  if (directPlatform) {
+    return Promise.reject(new Error('Voice bridge unavailable'));
+  }
+  return openStudioVoiceSocket(callbacks, language, voice);
+}
+
+function openStudioVoiceSocket(
+  callbacks: LiveVoiceSessionCallbacks,
+  language: 'fr' | 'en',
+  voice: 'Kore' | 'Puck'
 ): Promise<LiveVoiceSession> {
   return new Promise((resolve, reject) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -186,15 +198,24 @@ export async function startVoiceSession(
       return;
     }
 
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled || isConnected) return;
+      settled = true;
+      clearTimeout(connectionTimeout);
+      callbacks.onError?.(err);
+      reject(err);
+    };
+
     const connectionTimeout = setTimeout(() => {
-      if (!isConnected) {
-        socket.close();
-        reject(new Error('Connection timeout to Gemini Live voice service'));
-      }
+      if (settled || isConnected) return;
+      try { socket.close(); } catch { /* already closed */ }
+      fail(new Error('Connection timeout to Gemini Live voice service'));
     }, 8000);
 
     socket.onopen = () => {
       isConnected = true;
+      settled = true;
       clearTimeout(connectionTimeout);
 
       resolve({
@@ -226,17 +247,13 @@ export async function startVoiceSession(
       });
     };
 
-    socket.onerror = (evt) => {
-      clearTimeout(connectionTimeout);
-      const err = new Error('WebSocket connection error');
-      callbacks.onError?.(err);
-      if (!isConnected) {
-        reject(err);
-      }
+    socket.onerror = () => {
+      fail(new Error('WebSocket connection error'));
     };
 
     socket.onclose = () => {
       callbacks.onClose?.();
+      if (!isConnected) fail(new Error('WebSocket connection error'));
     };
 
     socket.onmessage = async (event) => {

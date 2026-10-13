@@ -82,6 +82,7 @@ const STRINGS = {
     simulateEn: '⚡ Simuler "Red SUV"',
     debugTitle: 'Diagnostic Audio & Voix Bilingue',
     voiceMessageBadge: 'Message vocal',
+    voiceNeedsStudio: 'La voix en direct passe par le studio. Écrivez votre question.',
   },
   en: {
     dealerName: 'Automobile Lambert',
@@ -122,6 +123,7 @@ const STRINGS = {
     simulateEn: '⚡ Simulate "Red SUV"',
     debugTitle: 'Audio & Bilingual Voice Diagnostics',
     voiceMessageBadge: 'Voice message',
+    voiceNeedsStudio: 'Voice chat needs the studio bridge. Type your question.',
   },
 };
 
@@ -163,6 +165,7 @@ export const ChatWidget: React.FC = () => {
   const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Kore HD activée)');
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestFeedback, setMicTestFeedback] = useState<string>('');
+  const [voiceBridgeNotice, setVoiceBridgeNotice] = useState<string>('');
 
   // Audio & Live Session Refs
   const activeSessionRef = useRef<LiveVoiceSession | null>(null);
@@ -191,10 +194,12 @@ export const ChatWidget: React.FC = () => {
     );
   }, [dealer.name, language]);
 
-  // Initialize audio playback and capture controllers
+  // Initialize audio playback. Mic capture exists only beside a real studio socket.
   useEffect(() => {
     audioPlaybackRef.current = new AudioPlaybackController();
-    audioCaptureRef.current = new AudioCaptureController();
+    if (!directPlatform) {
+      audioCaptureRef.current = new AudioCaptureController();
+    }
 
     // Check navigator permissions if available
     if (navigator.permissions && navigator.permissions.query) {
@@ -335,8 +340,13 @@ export const ChatWidget: React.FC = () => {
     setLastDebugEvent('Écoute annulée');
   }, [cleanStopRecording]);
 
-  // Start Voice Session (Listening Mode)
+  // Start Voice Session (Listening Mode). The dealer embed has no /api/live socket.
   const startListening = useCallback(async () => {
+    if (directPlatform) {
+      setVoiceBridgeNotice(t.voiceNeedsStudio);
+      setLastDebugEvent(t.voiceNeedsStudio);
+      return;
+    }
     if (isListeningRef.current) return;
 
     isListeningRef.current = true;
@@ -498,7 +508,7 @@ export const ChatWidget: React.FC = () => {
       setLastDebugEvent(`Erreur micro: ${err.message}`);
       console.error('Failed to start voice capture:', err);
     }
-  }, [cleanStopRecording, language, selectedVoice]);
+  }, [cleanStopRecording, language, selectedVoice, t.voiceNeedsStudio]);
 
   // Submit voice turn: Transitions from "Listening..." -> "Thinking..." -> Model reply
   const submitVoiceTurn = useCallback(() => {
@@ -623,6 +633,11 @@ export const ChatWidget: React.FC = () => {
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
+    if (directPlatform) {
+      setVoiceBridgeNotice(t.voiceNeedsStudio);
+      setLastDebugEvent(t.voiceNeedsStudio);
+      return;
+    }
     if (voiceStatus === 'listening') {
       // If already listening in click-to-talk mode, clicking sends!
       submitVoiceTurn();
@@ -639,6 +654,7 @@ export const ChatWidget: React.FC = () => {
   // Pointer Up on Mic button
   const handleMicPointerUp = (e: React.PointerEvent) => {
     e.preventDefault();
+    if (directPlatform) return;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     } catch {}
@@ -1163,6 +1179,12 @@ export const ChatWidget: React.FC = () => {
 
           {/* Footer Controls & Inputs */}
           <div className="bg-white border-t border-gray-200 p-3 space-y-2 shrink-0">
+            {voiceBridgeNotice && (
+              <p className="text-[11px] leading-snug text-[#991b1e] font-medium px-0.5" role="status">
+                {voiceBridgeNotice}
+              </p>
+            )}
+
             {/* Quick search suggestions */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
               <button
