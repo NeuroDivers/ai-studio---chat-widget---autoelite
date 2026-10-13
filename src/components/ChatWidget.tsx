@@ -257,7 +257,8 @@ export const ChatWidget: React.FC = () => {
     await audioPlaybackRef.current?.resume();
 
     const voiceFile = selectedVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
-    const directWavUrl = `/audio/greeting-${voiceFile}.wav`;
+    // Version the file so browsers drop the older greeting that clicked at the end.
+    const directWavUrl = `/audio/greeting-${voiceFile}.wav?v=3`;
     try {
       await audioPlaybackRef.current?.playAudioUrl(directWavUrl);
       setIsPlayingIntro(false);

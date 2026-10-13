@@ -524,8 +524,8 @@ export class AudioPlaybackController {
 
         // Ensure decoded buffer has a pristine cosine fade-out (100ms) and 60ms of trailing silence
         // to guarantee ZERO soundcard click/pop on all browsers and operating systems
-        const fadeMs = 100;
-        const silenceMs = 60;
+        const fadeMs = 150;
+        const silenceMs = 200;
         const sr = decoded.sampleRate;
         const channels = decoded.numberOfChannels;
         const fadeFrames = Math.floor(sr * (fadeMs / 1000));
@@ -566,20 +566,30 @@ export class AudioPlaybackController {
 
       return new Promise<void>((resolve) => {
         const sourceNode = ctx.createBufferSource();
+        const gain = ctx.createGain();
         sourceNode.buffer = audioBuffer;
-        sourceNode.connect(this.getMasterNode());
+        sourceNode.connect(gain);
+        gain.connect(this.getMasterNode());
+
+        const startAt = ctx.currentTime + 0.02;
+        const endAt = startAt + audioBuffer.duration;
+        const fadeStart = Math.max(startAt, endAt - 0.15);
+        gain.gain.setValueAtTime(1, startAt);
+        gain.gain.setValueAtTime(1, fadeStart);
+        gain.gain.linearRampToValueAtTime(0, endAt);
 
         let finished = false;
         const onEnd = () => {
           if (finished) return;
           finished = true;
+          try { gain.disconnect(); } catch {}
           const idx = this.activeSources.indexOf(sourceNode);
           if (idx !== -1) this.activeSources.splice(idx, 1);
           resolve();
         };
 
         sourceNode.onended = onEnd;
-        sourceNode.start(ctx.currentTime);
+        sourceNode.start(startAt);
         this.activeSources.push(sourceNode);
       });
     } catch (webAudioErr) {

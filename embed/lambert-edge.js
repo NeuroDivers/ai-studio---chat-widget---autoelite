@@ -58,7 +58,7 @@ export default {
         const bytes = await upstream.arrayBuffer();
         const headers = {
           "content-type": "audio/wav",
-          "cache-control": "public, max-age=86400",
+          "cache-control": "public, max-age=300",
         };
         if (!cached) {
           await cache.put(audioUrl, new Response(bytes, { headers }));
