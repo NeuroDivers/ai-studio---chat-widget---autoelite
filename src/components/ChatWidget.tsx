@@ -13,20 +13,28 @@ import {
   AlertCircle,
   CheckCircle,
   Square,
-  Radio,
   Globe,
 } from 'lucide-react';
 import { Vehicle } from '../types/inventory';
+import { useDealer } from '../dealerContext';
 import { VehicleCard } from './VehicleCard';
 import { VehicleDetailView } from './VehicleDetailView';
+import { ExpandedInventory } from './ExpandedInventory';
 import { VoicePulseScreen } from './VoicePulseScreen';
 import {
   loadVehicles,
   startVoiceSession,
   isVehicleSearchQuery,
+  inventoryReplyText,
+  inventorySummary,
+  answerDealer,
+  directPlatform,
   LiveVoiceSession,
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
+import { fetchPlatformVoiceAudio } from '../platformVoice';
+import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget, resolveTurnstileHost } from '../turnstile';
+import { chatTurnstileHost, submitTestDriveLead, TestDriveLeadDraft } from '../testDriveLead';
 
 interface ChatMessage {
   id: string;
@@ -39,6 +47,14 @@ interface ChatMessage {
 
 type Language = 'fr' | 'en';
 type VoiceMode = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+function latestResultVehicles(messages: ChatMessage[]): Vehicle[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const vehicles = messages[index].vehicles;
+    if (vehicles && vehicles.length > 0) return vehicles;
+  }
+  return [];
+}
 
 const STRINGS = {
   fr: {
@@ -71,8 +87,7 @@ const STRINGS = {
     singleMatch: 'Voici le véhicule disponible correspondant à votre recherche :',
     multipleMatch: (n: number) => `Voici les ${n} véhicules disponibles correspondant à votre recherche :`,
     noMatch: 'Aucun véhicule disponible ne correspond à votre recherche. Souhaitez-vous explorer un autre type de véhicule comme un VUS, une berline ou un camion ?',
-    testDriveRequest: (v: Vehicle) => `Je souhaite réserver un essai routier pour le ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
-    testDriveBooked: (v: Vehicle) => `Excellente décision ! Notre équipe commerciale d'Automobile Lambert a bien noté votre demande pour le ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au (450) 555-0199.`,
+    testDriveBooked: (v: Vehicle, phone: string) => `Excellente décision ! Notre équipe commerciale d'Automobile Lambert a bien noté votre demande pour le ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). Un conseiller vous contactera dans les plus brefs délais.${phone ? ` Vous pouvez aussi nous appeler au ${phone}.` : ''}`,
     defaultAiFallback: "Bonjour ! Je suis à votre service chez Automobile Lambert. Cherchez-vous un VUS rouge, une berline ou un camion ?",
     micTestTitle: '🎙️ Tester micro 3s',
     micTestTesting: 'Test en cours...',
@@ -80,6 +95,7 @@ const STRINGS = {
     simulateEn: '⚡ Simuler "Red SUV"',
     debugTitle: 'Diagnostic Audio & Voix Bilingue',
     voiceMessageBadge: 'Message vocal',
+    speechUnavailable: "La reconnaissance vocale n'est pas disponible dans ce navigateur.",
   },
   en: {
     dealerName: 'Automobile Lambert',
@@ -111,8 +127,7 @@ const STRINGS = {
     singleMatch: 'Here is the available vehicle matching your search:',
     multipleMatch: (n: number) => `Here are the ${n} available vehicles matching your search:`,
     noMatch: 'No available vehicles match your search. Would you like to explore another vehicle type such as an SUV, sedan, or truck?',
-    testDriveRequest: (v: Vehicle) => `I would like to book a test drive for the ${v.year} ${v.make} ${v.model} (#${v.stock_number}).`,
-    testDriveBooked: (v: Vehicle) => `Great choice! Our sales team at Automobile Lambert has received your test drive request for the ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). An advisor will contact you shortly. You can also reach us at (450) 555-0199.`,
+    testDriveBooked: (v: Vehicle, phone: string) => `Great choice! Our sales team at Automobile Lambert has received your test drive request for the ${v.year} ${v.make} ${v.model} (Stock #${v.stock_number}). An advisor will contact you shortly.${phone ? ` You can also reach us at ${phone}.` : ''}`,
     defaultAiFallback: "Hello! I'm here to help at Automobile Lambert. Are you looking for a red SUV, a sedan, or a truck?",
     micTestTitle: '🎙️ Test Mic 3s',
     micTestTesting: 'Testing...',
@@ -120,43 +135,184 @@ const STRINGS = {
     simulateEn: '⚡ Simulate "Red SUV"',
     debugTitle: 'Audio & Bilingual Voice Diagnostics',
     voiceMessageBadge: 'Voice message',
+    speechUnavailable: 'Speech recognition is not available in this browser.',
   },
 };
 
 export const WIDGET_VERSION = 'v2.4.0';
 
+function greetingFor(lang: Language, dealerName: string, voice: 'Kore' | 'Puck' = 'Kore'): string {
+  const feminine = VOICE_PROFILES[voice].gender === 'female';
+  if (lang === 'en') {
+    return `Hello and welcome to ${dealerName} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`;
+  }
+  const role = feminine ? 'conseillère virtuelle' : 'conseiller virtuel';
+  return `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre ${role}. Comment puis-je vous aider aujourd'hui ?`;
+}
+
+const COLOR_TO_EN: Record<string, string> = {
+  rouge: 'red',
+  red: 'red',
+  noir: 'black',
+  black: 'black',
+  blanc: 'white',
+  white: 'white',
+  bleu: 'blue',
+  blue: 'blue',
+  gris: 'gray',
+  grey: 'gray',
+  gray: 'gray',
+  argent: 'silver',
+  silver: 'silver',
+  vert: 'green',
+  green: 'green',
+  brun: 'brown',
+  brown: 'brown',
+  beige: 'beige',
+  orange: 'orange',
+  or: 'gold',
+  gold: 'gold',
+  jaune: 'yellow',
+  yellow: 'yellow',
+};
+
+const COLOR_TO_FR: Record<string, string> = {
+  red: 'rouge',
+  rouge: 'rouge',
+  black: 'noir',
+  noir: 'noir',
+  white: 'blanc',
+  blanc: 'blanc',
+  blue: 'bleu',
+  bleu: 'bleu',
+  gray: 'gris',
+  grey: 'gris',
+  gris: 'gris',
+  silver: 'argent',
+  argent: 'argent',
+  green: 'vert',
+  vert: 'vert',
+  brown: 'brun',
+  brun: 'brun',
+  beige: 'beige',
+  orange: 'orange',
+  gold: 'or',
+  or: 'or',
+  yellow: 'jaune',
+  jaune: 'jaune',
+};
+
+function spokenColor(raw: string, lang: Language): string {
+  const key = raw.trim().toLowerCase();
+  if (!key) return '';
+  const table = lang === 'en' ? COLOR_TO_EN : COLOR_TO_FR;
+  return table[key] || key;
+}
+
+function cardColor(vehicle: Vehicle): string {
+  const extra = vehicle as Vehicle & { color?: string | null };
+  const shown = vehicle.exterior_color || extra.color || '';
+  return String(shown).trim();
+}
+
+/** "2018 Volkswagen Tiguan, white" — year, make, model, and the card color. */
+function spokenVehiclePhrase(vehicle: Vehicle, lang: Language): string {
+  const name = [vehicle.year, vehicle.make, vehicle.model]
+    .filter((part) => part !== undefined && part !== null && String(part).trim() !== '')
+    .join(' ');
+  const color = spokenColor(cardColor(vehicle), lang);
+  if (!name) return color;
+  if (!color) return name;
+  return `${name}, ${color}`;
+}
+
+/**
+ * Mic reply text.
+ * More than three matches: the count summary only.
+ * One to three: the short match sentence, then each vehicle with year, make, model, and color.
+ */
+export function spokenMicReply(text: string, vehicles?: Vehicle[], lang: Language = 'fr'): string {
+  const list = vehicles || [];
+  if (list.length > 3) return inventorySummary(list.length, lang);
+  const sentence = text.replace(/\s+/g, ' ').trim();
+  const names = list.map((vehicle) => spokenVehiclePhrase(vehicle, lang)).filter((name) => name.length > 0);
+  if (!sentence) return names.join('. ');
+  if (names.length === 0) return sentence;
+  const spoken = `${sentence} ${names.join('. ')}`;
+  return /[.!?]$/.test(spoken) ? spoken : `${spoken}.`;
+}
+
+type BrowserVoice = {
+  name: string;
+  lang: string;
+  voiceURI?: string;
+  default?: boolean;
+  gender?: string;
+};
+
+const FEMALE_VOICE = /\b(kore|female|woman|femme|zira|samantha|victoria|karen|moira|tessa|amelie|amélie|audrey|susan|linda|heather|fiona|kate|aria|jenny|sonia|nathalie|chloe|chloé|lea|léa|julie|sylvie|hortense|caroline|catherine|hazel|serena|allison|ava)\b/i;
+const MALE_VOICE = /\b(puck|male|homme|david|mark|daniel|fred|thomas|jacques|rishi|aaron|george|james|brian|ryan|claude|paul|henri|mathieu|guy|alex)\b/i;
+
+function hintedGender(voice: BrowserVoice): 'female' | 'male' | null {
+  const explicit = (voice.gender || '').toLowerCase();
+  if (explicit === 'female' || explicit === 'male') return explicit;
+  const blob = `${voice.name} ${voice.voiceURI || ''}`;
+  if (/\bpuck\b/i.test(blob)) return 'male';
+  if (/\bkore\b/i.test(blob)) return 'female';
+  const female = FEMALE_VOICE.test(blob);
+  const male = MALE_VOICE.test(blob);
+  if (male && !female) return 'male';
+  if (female && !male) return 'female';
+  return null;
+}
+
+/**
+ * Pick the browser voice that matches the greeting: Kore is feminine, Puck is masculine.
+ * A voice whose name contains Kore or Puck wins. Otherwise match gender inside fr-CA or en-US.
+ */
+export function chooseBrowserVoice<T extends BrowserVoice>(
+  voices: T[],
+  selected: 'Kore' | 'Puck',
+  lang: Language,
+): T | undefined {
+  if (!voices.length) return undefined;
+  const wanted: 'female' | 'male' = selected === 'Puck' ? 'male' : 'female';
+  const exact = lang === 'en' ? 'en-us' : 'fr-ca';
+  const prefix = lang === 'en' ? 'en' : 'fr';
+  const codeOf = (voice: T) => voice.lang.toLowerCase().replace('_', '-');
+  const langRank = (voice: T) => {
+    const code = codeOf(voice);
+    if (code === exact) return 0;
+    if (code.startsWith(`${prefix}-`) || code === prefix) return 1;
+    return 2;
+  };
+  const label = (voice: T) => `${voice.name} ${voice.voiceURI || ''}`;
+  const named = voices.filter((voice) => new RegExp(`\\b${selected}\\b`, 'i').test(label(voice)));
+  const namedInLang = named
+    .filter((voice) => langRank(voice) < 2)
+    .sort((a, b) => langRank(a) - langRank(b));
+  if (namedInLang[0]) return namedInLang[0];
+  if (named[0]) return named[0];
+
+  const inLanguage = voices.filter((voice) => langRank(voice) < 2);
+  const pool = inLanguage.length > 0 ? inLanguage : voices;
+  const ranked = [...pool].sort((a, b) => {
+    const genderScore = (voice: T) => (hintedGender(voice) === wanted ? 0 : hintedGender(voice) ? 2 : 1);
+    const byGender = genderScore(a) - genderScore(b);
+    if (byGender !== 0) return byGender;
+    return langRank(a) - langRank(b);
+  });
+  return ranked[0];
+}
+
 export interface VoiceProfile {
   id: 'Kore' | 'Puck';
-  displayNameFr: string;
-  displayNameEn: string;
-  roleFr: string;
-  roleEn: string;
   gender: 'female' | 'male';
-  greetingFr: string;
-  greetingEn: string;
 }
 
 export const VOICE_PROFILES: Record<'Kore' | 'Puck', VoiceProfile> = {
-  Kore: {
-    id: 'Kore',
-    displayNameFr: 'Chloé',
-    displayNameEn: 'Chloe',
-    roleFr: 'Conseillère virtuelle (Voix féminine)',
-    roleEn: 'Virtual Advisor (Female voice)',
-    gender: 'female',
-    greetingFr: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?",
-    greetingEn: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
-  },
-  Puck: {
-    id: 'Puck',
-    displayNameFr: 'Alex',
-    displayNameEn: 'Alex',
-    roleFr: 'Conseiller virtuel (Voix masculine)',
-    roleEn: 'Virtual Advisor (Male voice)',
-    gender: 'male',
-    greetingFr: "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui ?",
-    greetingEn: "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?",
-  },
+  Kore: { id: 'Kore', gender: 'female' },
+  Puck: { id: 'Puck', gender: 'male' },
 };
 
 /**
@@ -206,6 +362,7 @@ export function languageFromSite(): Language {
 }
 
 export const ChatWidget: React.FC = () => {
+  const dealer = useDealer();
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [language, setLanguage] = useState<Language>(() => languageFromSite());
@@ -215,7 +372,7 @@ export const ChatWidget: React.FC = () => {
       {
         id: 'init-greeting',
         sender: 'assistant',
-        text: STRINGS[initLang].greetingText,
+        text: greetingFor(initLang, dealer.name),
       },
     ];
   });
@@ -232,12 +389,12 @@ export const ChatWidget: React.FC = () => {
 
   // Diagnostic / Debugging states
   const [selectedVoice, setSelectedVoice] = useState<'Kore' | 'Puck'>('Kore');
-  const [showDebug, setShowDebug] = useState<boolean>(false);
   const [micPermissionState, setMicPermissionState] = useState<string>('unknown');
   const [webSocketStatus, setWebSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Chloé activée)');
+  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Kore HD activée)');
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestFeedback, setMicTestFeedback] = useState<string>('');
+  const [voiceBridgeNotice, setVoiceBridgeNotice] = useState<string>('');
 
   // Audio & Live Session Refs
   const activeSessionRef = useRef<LiveVoiceSession | null>(null);
@@ -250,16 +407,50 @@ export const ChatWidget: React.FC = () => {
   const currentAssistantMsgIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isListeningRef = useRef<boolean>(false);
+  const speechTranscriptRef = useRef<string>('');
+  const speechDraftIdRef = useRef<string | null>(null);
+  const speechCancelRef = useRef<boolean>(false);
+  const speechCompletingRef = useRef<boolean>(false);
+  const speechUnavailableNotedRef = useRef<boolean>(false);
+  const speechHandledRef = useRef<boolean>(false);
+  const micHoldActiveRef = useRef<boolean>(false);
+  const speechUtteranceRef = useRef<number>(0);
+  const platformVoiceAbortRef = useRef<AbortController | null>(null);
+  const turnstileHostRef = useRef<HTMLDivElement | null>(null);
   const hasReceivedModelAudioRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const holdStartTimeRef = useRef<number>(0);
 
   const t = STRINGS[language];
 
-  // Initialize audio playback and capture controllers
+  useEffect(() => {
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === 'init-greeting'
+          ? { ...message, text: greetingFor(language, dealer.name, selectedVoice) }
+          : message
+      )
+    );
+  }, [dealer.name, language, selectedVoice]);
+
+  // Warm the invisible Turnstile widget. The iframe stays in the light DOM.
+  useEffect(() => {
+    if (!directPlatform || !isOpen) return;
+    const host = resolveTurnstileHost(turnstileHostRef.current);
+    if (!host) return;
+    void prepareTurnstile(host).catch(() => {
+      /* A failed widget falls back to speechSynthesis when a mic reply is spoken. */
+    });
+  }, [isOpen]);
+
+  // Initialize audio playback. Mic capture exists only beside a real studio socket.
   useEffect(() => {
     audioPlaybackRef.current = new AudioPlaybackController();
-    audioCaptureRef.current = new AudioCaptureController();
+    if (!directPlatform) {
+      audioCaptureRef.current = new AudioCaptureController();
+    } else if (typeof window !== 'undefined' && window.speechSynthesis?.getVoices) {
+      try { window.speechSynthesis.getVoices(); } catch { /* voices load on voiceschanged */ }
+    }
 
     // Check navigator permissions if available
     if (navigator.permissions && navigator.permissions.query) {
@@ -298,13 +489,7 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) =>
       prev.map((m) =>
         m.id === 'init-greeting'
-          ? {
-              ...m,
-              text:
-                newLang === 'fr'
-                  ? VOICE_PROFILES[selectedVoice].greetingFr
-                  : VOICE_PROFILES[selectedVoice].greetingEn,
-            }
+          ? { ...m, text: greetingFor(newLang, dealer.name, selectedVoice) }
           : m
       )
     );
@@ -314,10 +499,10 @@ export const ChatWidget: React.FC = () => {
       activeSessionRef.current.setLanguage(newLang);
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
-  }, [isPlayingIntro, language, selectedVoice]);
+  }, [dealer.name, isPlayingIntro, language, selectedVoice]);
 
-  // Voice switch handler (toggles between Chloé [Kore] and Alex [Puck])
   const handleVoiceChange = useCallback((newVoice: 'Kore' | 'Puck') => {
+    if (newVoice === selectedVoice) return;
     if (isPlayingIntro) {
       audioPlaybackRef.current?.interrupt();
       setIsPlayingIntro(false);
@@ -325,26 +510,18 @@ export const ChatWidget: React.FC = () => {
 
     setSelectedVoice(newVoice);
 
-    // Update initial greeting message text to match the advisor persona & gender
     setMessages((prev) =>
       prev.map((m) =>
         m.id === 'init-greeting'
-          ? {
-              ...m,
-              text:
-                language === 'fr'
-                  ? VOICE_PROFILES[newVoice].greetingFr
-                  : VOICE_PROFILES[newVoice].greetingEn,
-            }
+          ? { ...m, text: greetingFor(language, dealer.name, newVoice) }
           : m
       )
     );
 
-    const profile = VOICE_PROFILES[newVoice];
-    setLastDebugEvent(`Voix activée: ${profile.displayNameFr} (${profile.roleFr})`);
-  }, [isPlayingIntro, language]);
+    setLastDebugEvent(`Voix: ${newVoice}`);
+  }, [dealer.name, isPlayingIntro, language, selectedVoice]);
 
-  // Keep track of the last site language applied to avoid resetting manual in-widget overrides
+  // In-widget FR/EN stays until the parent site language itself changes.
   const lastSiteLanguageRef = useRef<Language>(languageFromSite());
 
   // Subscribe to parent page URL (popstate, pushState, replaceState, MutationObserver)
@@ -426,7 +603,7 @@ export const ChatWidget: React.FC = () => {
     };
   }, [handleLanguageChange]);
 
-  // Play high-fidelity spoken greeting introduction audio for currently selected advisor voice
+  // Play the studio greeting recording. Kore is the default file for each language.
   const playGreetingIntro = useCallback(async () => {
     if (isPlayingIntro) {
       audioPlaybackRef.current?.interrupt();
@@ -438,9 +615,9 @@ export const ChatWidget: React.FC = () => {
     await audioPlaybackRef.current?.resume();
 
     const voiceFile = selectedVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
+    // Version the file so browsers drop the older greeting that clicked at the end.
     const directWavUrl = `/audio/greeting-${voiceFile}.wav?v=3`;
 
-    // 1. Play pristine studio WAV file directly (0ms latency, zero static, clear natural voice)
     try {
       await audioPlaybackRef.current?.playAudioUrl(directWavUrl);
       setIsPlayingIntro(false);
@@ -501,25 +678,320 @@ export const ChatWidget: React.FC = () => {
     }
     audioCaptureRef.current?.stop();
     if (speechRecognitionRef.current) {
-      try { speechRecognitionRef.current.stop(); } catch {}
+      const recognition = speechRecognitionRef.current;
       speechRecognitionRef.current = null;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try { recognition.stop(); } catch {}
     }
     setVolumeLevel(0);
   }, []);
 
+  const silenceSpokenReply = useCallback(() => {
+    speechUtteranceRef.current += 1;
+    platformVoiceAbortRef.current?.abort();
+    platformVoiceAbortRef.current = null;
+    audioPlaybackRef.current?.interrupt();
+    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
+      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
+    }
+  }, []);
+
   // Cancel voice interaction without sending
   const cancelListening = useCallback(() => {
+    speechCancelRef.current = true;
+    speechTranscriptRef.current = '';
+    const draftId = speechDraftIdRef.current;
+    speechDraftIdRef.current = null;
     cleanStopRecording();
     setVoiceStatus('idle');
     setLiveTranscript('');
     setShowVoicePulseOverlay(false);
     activeSessionRef.current?.close();
     activeSessionRef.current = null;
+    if (draftId) {
+      setMessages((prev) => prev.filter((message) => message.id !== draftId));
+    }
+    silenceSpokenReply();
     setLastDebugEvent('Écoute annulée');
-  }, [cleanStopRecording]);
+  }, [cleanStopRecording, silenceSpokenReply]);
 
-  // Start Voice Session (Listening Mode)
+  const composeReply = useCallback(async (query: string): Promise<{ text: string; vehicles?: Vehicle[] }> => {
+    const unreachable =
+      language === 'en'
+        ? 'I could not reach the showroom just now. Please try again.'
+        : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+    try {
+      if (isVehicleSearchQuery(query)) {
+        const results = await loadVehicles(query);
+        return {
+          text: inventoryReplyText(query, results.length, language),
+          vehicles: results.length > 0 ? results : undefined,
+        };
+      }
+      const text = await answerDealer(query, language);
+      if (/peut vous aider à chercher|can help you search the inventory|\b403\b|unauthorized origin|bot verification failed/i.test(text)) {
+        const results = await loadVehicles(query);
+        if (results.length > 0) {
+          return {
+            text: inventoryReplyText(query, results.length, language),
+            vehicles: results,
+          };
+        }
+        if (isVehicleSearchQuery(query)) {
+          return { text: inventoryReplyText(query, 0, language) };
+        }
+        return {
+          text:
+            language === 'en'
+              ? 'I can search the inventory, or share the hours, address, and phone.'
+              : "Je peux chercher dans l'inventaire, ou vous donner les heures, l'adresse et le téléphone.",
+        };
+      }
+      return { text };
+    } catch {
+      return { text: unreachable };
+    }
+  }, [language]);
+
+  const noteSpeechUnavailable = useCallback(() => {
+    if (speechUnavailableNotedRef.current) return;
+    speechUnavailableNotedRef.current = true;
+    setVoiceBridgeNotice(t.speechUnavailable);
+    setLastDebugEvent(t.speechUnavailable);
+  }, [t.speechUnavailable]);
+
+  const speakMicReply = useCallback((text: string, vehicles?: Vehicle[]) => {
+    if (!directPlatform) return;
+    const spoken = spokenMicReply(text, vehicles, language);
+    if (!spoken || typeof window === 'undefined') {
+      setVoiceStatus('idle');
+      return;
+    }
+
+    silenceSpokenReply();
+    const utterance = speechUtteranceRef.current;
+    const abort = new AbortController();
+    platformVoiceAbortRef.current = abort;
+    const finish = () => {
+      if (speechUtteranceRef.current !== utterance) return;
+      setVoiceStatus((status) => (status === 'speaking' ? 'idle' : status));
+    };
+    const speakWithBrowser = () => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      const synthesis = window.speechSynthesis;
+      const UtteranceCtor = window.SpeechSynthesisUtterance;
+      if (!synthesis || typeof synthesis.speak !== 'function' || typeof synthesis.cancel !== 'function' || typeof UtteranceCtor !== 'function') {
+        setVoiceStatus('idle');
+        return;
+      }
+      try {
+        synthesis.cancel();
+        const browserUtterance = new UtteranceCtor(spoken);
+        // Kore is feminine and Puck is masculine when the platform voice is unavailable.
+        browserUtterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
+        const voices = typeof synthesis.getVoices === 'function' ? synthesis.getVoices() : [];
+        const chosen = chooseBrowserVoice(voices, selectedVoice, language);
+        if (chosen) browserUtterance.voice = chosen;
+        browserUtterance.onend = finish;
+        browserUtterance.onerror = finish;
+        synthesis.speak(browserUtterance);
+        setVoiceStatus('speaking');
+      } catch (error) {
+        console.warn('Speech synthesis unavailable', error);
+        setVoiceStatus('idle');
+      }
+    };
+
+    const host = resolveTurnstileHost(turnstileHostRef.current);
+    const platformAttempt = host
+      ? obtainTurnstileToken(host)
+        .then((turnstileToken) => {
+          if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return null;
+          return fetchPlatformVoiceAudio(spoken, language, selectedVoice, turnstileToken, abort.signal);
+        })
+        .finally(() => {
+          if (speechUtteranceRef.current === utterance) resetTurnstileWidget();
+        })
+      : Promise.resolve(null);
+
+    void platformAttempt.then((audio) => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      if (audio && audioPlaybackRef.current) {
+        setVoiceStatus('speaking');
+        void audioPlaybackRef.current.playWavBase64(audio).finally(finish);
+        return;
+      }
+      speakWithBrowser();
+    }).catch((error) => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      console.warn('Platform voice unavailable', error instanceof Error ? error.message : 'error');
+      speakWithBrowser();
+    });
+  }, [language, selectedVoice, silenceSpokenReply]);
+
+  const completeBrowserSpeech = useCallback((reason: 'click' | 'end' | 'release') => {
+    if (speechCancelRef.current) return;
+    if (speechHandledRef.current || speechCompletingRef.current) return;
+    if (reason === 'end' && !isListeningRef.current) return;
+
+    const query = speechTranscriptRef.current.trim();
+    speechTranscriptRef.current = '';
+    speechHandledRef.current = true;
+    speechCompletingRef.current = true;
+    isListeningRef.current = false;
+    micHoldActiveRef.current = false;
+
+    const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try { recognition.stop(); } catch { /* already ended */ }
+    }
+
+    setShowVoicePulseOverlay(false);
+    setVolumeLevel(0);
+
+    if (!query) {
+      const draftId = speechDraftIdRef.current;
+      speechDraftIdRef.current = null;
+      if (draftId) {
+        setMessages((prev) => prev.filter((message) => message.id !== draftId));
+      }
+      setLiveTranscript('');
+      setVoiceStatus('idle');
+      speechCompletingRef.current = false;
+      return;
+    }
+
+    setVoiceStatus('thinking');
+    setLastDebugEvent(`Passage en 'Thinking...' pour: "${query}"`);
+    setLiveTranscript('');
+    const assistantMsgId = 'voice-a-' + Date.now();
+    currentAssistantMsgIdRef.current = assistantMsgId;
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantMsgId, sender: 'assistant', text: '', isThinking: true },
+    ]);
+
+    composeReply(query)
+      .then((reply) => {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMsgId
+              ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
+              : message
+          )
+        );
+        speakMicReply(reply.text, reply.vehicles);
+      })
+      .catch(() => {
+        const text =
+          language === 'en'
+            ? 'I could not reach the showroom just now. Please try again.'
+            : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+          )
+        );
+        speakMicReply(text);
+      })
+      .finally(() => {
+        speechCompletingRef.current = false;
+      });
+  }, [composeReply, language, speakMicReply]);
+
+  const startBrowserSpeech = useCallback(() => {
+    if (isListeningRef.current || speechCompletingRef.current) return;
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      noteSpeechUnavailable();
+      return;
+    }
+
+    speechCancelRef.current = false;
+    speechTranscriptRef.current = '';
+    speechCompletingRef.current = false;
+    speechHandledRef.current = false;
+    isListeningRef.current = true;
+    const draftId = 'speech-live-' + Date.now();
+    speechDraftIdRef.current = draftId;
+    setVoiceStatus('listening');
+    setLiveTranscript('');
+    setVoiceBridgeNotice('');
+    setVolumeLevel(0);
+    setLastDebugEvent(`Écoute du navigateur (${language === 'en' ? 'en-US' : 'fr-CA'})`);
+
+    silenceSpokenReply();
+    audioPlaybackRef.current?.interrupt();
+    setIsPlayingIntro(false);
+
+    let recognition: any;
+    try {
+      recognition = new SpeechRecognitionCtor();
+    } catch {
+      isListeningRef.current = false;
+      setVoiceStatus('idle');
+      noteSpeechUnavailable();
+      return;
+    }
+
+    recognition.lang = language === 'en' ? 'en-US' : 'fr-CA';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event: any) => {
+      const results = event?.results;
+      if (!results) return;
+      let text = '';
+      for (let i = 0; i < results.length; i++) {
+        text += results[i][0]?.transcript || '';
+      }
+      const trimmed = text.replace(/\s+/g, ' ').trim();
+      if (!trimmed) return;
+      speechTranscriptRef.current = trimmed;
+      setLiveTranscript(trimmed);
+      setMessages((prev) => {
+        if (prev.some((message) => message.id === draftId)) {
+          return prev.map((message) => (message.id === draftId ? { ...message, text: trimmed } : message));
+        }
+        return [...prev, { id: draftId, sender: 'user', text: trimmed, isVoice: true }];
+      });
+    };
+    recognition.onerror = (event: any) => {
+      const code = String(event?.error || '');
+      if (code === 'aborted' || code === 'no-speech') return;
+      if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture' || code === 'network') {
+        noteSpeechUnavailable();
+      }
+    };
+    recognition.onend = () => {
+      if (speechCancelRef.current) return;
+      if (speechRecognitionRef.current !== recognition) return;
+      completeBrowserSpeech('end');
+    };
+
+    speechRecognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      speechRecognitionRef.current = null;
+      isListeningRef.current = false;
+      setVoiceStatus('idle');
+      noteSpeechUnavailable();
+    }
+  }, [completeBrowserSpeech, language, noteSpeechUnavailable, silenceSpokenReply]);
+
+  // Start Voice Session (Listening Mode). The dealer embed has no /api/live socket.
   const startListening = useCallback(async () => {
+    if (directPlatform) {
+      startBrowserSpeech();
+      return;
+    }
     if (isListeningRef.current) return;
 
     isListeningRef.current = true;
@@ -594,12 +1066,12 @@ export const ChatWidget: React.FC = () => {
       setMicPermissionState('granted');
       setLastDebugEvent('Micro actif. Enregistrement en cours...');
 
-      // 3. Connect Gemini Live Session with selected language and Kore voice
+      // 3. Connect Gemini Live Session with selected language and Kore or Puck
       setWebSocketStatus('connecting');
       const session = await startVoiceSession({
         onReady: () => {
           setWebSocketStatus('connected');
-          setLastDebugEvent(`Gemini Live connecté (${VOICE_PROFILES[selectedVoice].displayNameFr} - ${language.toUpperCase()})`);
+          setLastDebugEvent(`Gemini Live connecté (${selectedVoice} - ${language.toUpperCase()})`);
         },
         onAudioChunk: (pcm24Base64) => {
           hasReceivedModelAudioRef.current = true;
@@ -681,7 +1153,7 @@ export const ChatWidget: React.FC = () => {
       setLastDebugEvent(`Erreur micro: ${err.message}`);
       console.error('Failed to start voice capture:', err);
     }
-  }, [cleanStopRecording, language, selectedVoice]);
+  }, [cleanStopRecording, language, selectedVoice, startBrowserSpeech]);
 
   // Submit voice turn: Transitions from "Listening..." -> "Thinking..." -> Model reply
   const submitVoiceTurn = useCallback(() => {
@@ -723,6 +1195,36 @@ export const ChatWidget: React.FC = () => {
       },
     ]);
 
+    if (directPlatform) {
+      const spoken = userQuery || effectiveText;
+      composeReply(spoken)
+        .then((reply) => {
+          activeModelTranscriptRef.current = reply.text;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMsgId
+                ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
+                : message
+            )
+          );
+          speakMicReply(reply.text, reply.vehicles);
+        })
+        .catch(() => {
+          const text =
+            language === 'en'
+              ? 'I could not reach the showroom just now. Please try again.'
+              : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
+            )
+          );
+          speakMicReply(text);
+        });
+      setLiveTranscript('');
+      return;
+    }
+
     // 3. Notify Gemini Live bridge of audio completion with recognized text
     if (activeSessionRef.current) {
       activeSessionRef.current.stopAudio(userQuery || undefined);
@@ -752,7 +1254,9 @@ export const ChatWidget: React.FC = () => {
                 isThinking: false,
                 text:
                   activeModelTranscriptRef.current ||
-                  STRINGS[language].defaultAiFallback,
+                  (language === 'en'
+                    ? `Hello! I'm here to help at ${dealer.name}. Are you looking for a red SUV, a sedan, or a truck?`
+                    : `Bonjour ! Je suis à votre service chez ${dealer.name}. Cherchez-vous un VUS rouge, une berline ou un camion ?`),
               }
             : m
         )
@@ -761,13 +1265,29 @@ export const ChatWidget: React.FC = () => {
     }, 4500);
 
     setLiveTranscript('');
-  }, [cleanStopRecording, language, liveTranscript, voiceStatus]);
+  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, speakMicReply, voiceStatus]);
 
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
+    if (directPlatform) {
+      if (voiceStatus === 'thinking' || speechCompletingRef.current) return;
+      if (voiceStatus === 'listening' || isListeningRef.current) {
+        micHoldActiveRef.current = false;
+        completeBrowserSpeech('click');
+        return;
+      }
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      } catch { /* pointer already released */ }
+      holdStartTimeRef.current = Date.now();
+      micHoldActiveRef.current = true;
+      startBrowserSpeech();
+      return;
+    }
     if (voiceStatus === 'listening') {
       // If already listening in click-to-talk mode, clicking sends!
+      micHoldActiveRef.current = false;
       submitVoiceTurn();
       return;
     }
@@ -776,22 +1296,47 @@ export const ChatWidget: React.FC = () => {
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     } catch {}
 
+    holdStartTimeRef.current = Date.now();
+    micHoldActiveRef.current = true;
     startListening();
   };
 
-  // Pointer Up on Mic button
-  const handleMicPointerUp = (e: React.PointerEvent) => {
+  // Release of a press submits. A short tap stays in click-toggle mode for a second click.
+  const finishMicHold = (e: React.PointerEvent, source: 'up' | 'leave' | 'cancel') => {
     e.preventDefault();
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {}
-
-    const holdDuration = Date.now() - holdStartTimeRef.current;
-    // If held for more than 450ms, release acts as "stop & send"
-    // If quickly tapped (< 450ms), stay in listening mode so user can speak comfortably
-    if (holdDuration > 450 && isListeningRef.current) {
-      submitVoiceTurn();
+    if (source !== 'leave') {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+      } catch { /* capture already released */ }
     }
+
+    if (!micHoldActiveRef.current) return;
+    const holdDuration = Date.now() - holdStartTimeRef.current;
+    // Scaling the button can emit pointerleave while the finger is still down.
+    if (source === 'leave' && holdDuration <= 450) return;
+
+    micHoldActiveRef.current = false;
+    if (holdDuration <= 450 || (!isListeningRef.current && voiceStatus !== 'listening')) return;
+    if (directPlatform) {
+      const recognition = speechRecognitionRef.current;
+      if (recognition && typeof recognition.stop === 'function') {
+        try { recognition.stop(); } catch { /* already stopped */ }
+      }
+      // stop() may emit the final result and onend, which submits once.
+      if (speechHandledRef.current || speechCompletingRef.current) return;
+      if (!speechTranscriptRef.current.trim()) {
+        const holdToken = holdStartTimeRef.current;
+        window.setTimeout(() => {
+          if (speechHandledRef.current || speechCompletingRef.current) return;
+          if (holdStartTimeRef.current !== holdToken || !isListeningRef.current) return;
+          completeBrowserSpeech('release');
+        }, 180);
+        return;
+      }
+      completeBrowserSpeech('release');
+      return;
+    }
+    submitVoiceTurn();
   };
 
   // Handle typed text messages
@@ -809,62 +1354,16 @@ export const ChatWidget: React.FC = () => {
     setMessages((prev) => [...prev, userMessage]);
     setInputText('');
 
-    if (isVehicleSearchQuery(query)) {
-      const results = await loadVehicles(query);
-      let replyText = '';
-      if (results.length > 0) {
-        replyText =
-          results.length === 1
-            ? t.singleMatch
-            : t.multipleMatch(results.length);
-      } else {
-        replyText = t.noMatch;
-      }
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text: replyText,
-          vehicles: results.length > 0 ? results : undefined,
-        },
-      ]);
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: query, lang: language }),
-      });
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text:
-            data.text ||
-            (language === 'en'
-              ? 'Thank you for your message. An Automobile Lambert advisor can also reach you at (450) 555-0199.'
-              : 'Merci pour votre message. Un conseiller d’Automobile Lambert peut également vous joindre au (450) 555-0199.'),
-        },
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg-a-' + Date.now(),
-          sender: 'assistant',
-          text:
-            language === 'en'
-              ? 'We are located at 1250 Curé-Labelle Blvd, Laval. Please feel free to call us at (450) 555-0199.'
-              : 'Nous sommes situés au 1250 boul. Curé-Labelle. N’hésitez pas à nous appeler directement au (450) 555-0199 pour plus de renseignements.',
-        },
-      ]);
-    }
+    const reply = await composeReply(query);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: 'msg-a-' + Date.now(),
+        sender: 'assistant',
+        text: reply.text,
+        vehicles: reply.vehicles,
+      },
+    ]);
   };
 
   // 3-second quick microphone test tool for diagnostics
@@ -927,6 +1426,27 @@ export const ChatWidget: React.FC = () => {
     }, 400);
   };
 
+  const expandedVehicles = latestResultVehicles(messages);
+  const showExpandedInventory = isExpanded && expandedVehicles.length > 0;
+
+  const submitTestDrive = useCallback(
+    async (draft: TestDriveLeadDraft) => {
+      const result = await submitTestDriveLead(draft, chatTurnstileHost(turnstileHostRef.current));
+      if (result.ok) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: 'td-' + Date.now(),
+            sender: 'assistant',
+            text: STRINGS[draft.language].testDriveBooked(draft.vehicle, dealer.phone),
+          },
+        ]);
+      }
+      return result;
+    },
+    [dealer.phone],
+  );
+
   return (
     <>
       {/* 1. Launcher: Round red chat bubble, bottom right */}
@@ -937,10 +1457,10 @@ export const ChatWidget: React.FC = () => {
             playGreetingIntro();
           }}
           className="fixed bottom-5 right-5 z-50 w-14 h-14 rounded-full bg-[#991b1e] text-white shadow-2xl hover:scale-105 active:scale-95 transition-all duration-200 flex items-center justify-center group focus:outline-none focus:ring-4 focus:ring-[#991b1e]/40 cursor-pointer"
-          aria-label="Ouvrir le clavardage Automobile Lambert"
+          aria-label={`Ouvrir le clavardage ${dealer.name}`}
         >
           <MessageSquare className="w-6 h-6 group-hover:rotate-6 transition-transform" />
-          <span className="sr-only">Clavarder avec Automobile Lambert</span>
+          <span className="sr-only">Clavarder avec {dealer.name}</span>
           <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-white" />
@@ -951,6 +1471,7 @@ export const ChatWidget: React.FC = () => {
       {/* 2. Chat Panel */}
       {isOpen && (
         <div
+          data-lambert-chat-panel=""
           className={`fixed z-50 bg-white shadow-2xl flex flex-col transition-all duration-200 text-gray-900 border border-gray-200 overflow-hidden ${
             isExpanded
               ? 'inset-0 w-full h-[100dvh] rounded-none'
@@ -967,9 +1488,8 @@ export const ChatWidget: React.FC = () => {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <h3 className="font-bold text-sm text-gray-900 leading-tight whitespace-nowrap truncate">
-                    {t.dealerName}
+                    {dealer.name}
                   </h3>
-                  {/* Real-time Voice Status Pill in Header */}
                   {voiceStatus === 'listening' && (
                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-[#991b1e] animate-pulse shrink-0">
                       <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />
@@ -990,36 +1510,27 @@ export const ChatWidget: React.FC = () => {
               </div>
             </div>
 
-            {/* Header controls (compact & uncluttered) */}
+            <slot name="turnstile" />
+            <div ref={turnstileHostRef} data-turnstile-action="voice" className="shrink-0" />
             <div className="flex items-center gap-1 text-gray-500 shrink-0">
-              {/* Voice Selector: Friendly advisor voice toggle (Chloé & Alex) */}
               <button
                 type="button"
                 onClick={() => {
                   const nextVoice = selectedVoice === 'Kore' ? 'Puck' : 'Kore';
                   handleVoiceChange(nextVoice);
                 }}
-                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
                 title={
                   language === 'en'
-                    ? `Advisor Voice: ${VOICE_PROFILES[selectedVoice].displayNameEn} (${VOICE_PROFILES[selectedVoice].roleEn}) • Click to switch to ${VOICE_PROFILES[selectedVoice === 'Kore' ? 'Puck' : 'Kore'].displayNameEn}`
-                    : `Voix du conseiller : ${VOICE_PROFILES[selectedVoice].displayNameFr} (${VOICE_PROFILES[selectedVoice].roleFr}) • Cliquer pour choisir ${VOICE_PROFILES[selectedVoice === 'Kore' ? 'Puck' : 'Kore'].displayNameFr}`
+                    ? `Voice: ${selectedVoice} (Click to toggle)`
+                    : `Voix : ${selectedVoice} (Cliquez pour changer)`
                 }
-                aria-label={
-                  language === 'en'
-                    ? `Voice: ${VOICE_PROFILES[selectedVoice].displayNameEn}`
-                    : `Voix : ${VOICE_PROFILES[selectedVoice].displayNameFr}`
-                }
+                aria-label={`Voix ${selectedVoice}`}
               >
                 <Mic className="w-3 h-3 text-[#991b1e]" />
-                <span>
-                  {language === 'en'
-                    ? VOICE_PROFILES[selectedVoice].displayNameEn
-                    : VOICE_PROFILES[selectedVoice].displayNameFr}
-                </span>
+                <span>{selectedVoice}</span>
               </button>
 
-              {/* Bilingual Language Switcher [ FR | EN ] */}
               <div className="flex items-center rounded-lg bg-gray-100 p-0.5 text-xs font-bold shrink-0">
                 <button
                   type="button"
@@ -1047,7 +1558,6 @@ export const ChatWidget: React.FC = () => {
                 </button>
               </div>
 
-              {/* Spoken voice introduction button */}
               <button
                 type="button"
                 onClick={playGreetingIntro}
@@ -1089,7 +1599,7 @@ export const ChatWidget: React.FC = () => {
             </div>
           </div>
 
-              {/* Full-screen VoicePulseScreen overlay if toggled */}
+          {/* Full-screen VoicePulseScreen overlay if toggled */}
           {showVoicePulseOverlay && (
             <VoicePulseScreen
               transcript={liveTranscript}
@@ -1100,32 +1610,25 @@ export const ChatWidget: React.FC = () => {
             />
           )}
 
-          {/* Vehicle Detail View if a vehicle card was clicked */}
-          {selectedVehicle && (
+          {/* Docked detail covers the thread. Expanded detail stays beside the list. */}
+          {selectedVehicle && !isExpanded && (
             <VehicleDetailView
               vehicle={selectedVehicle}
+              language={language}
               onBack={() => setSelectedVehicle(null)}
-              onRequestInfo={(v) => {
-                setSelectedVehicle(null);
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: 'req-' + Date.now(),
-                    sender: 'user',
-                    text: t.testDriveRequest(v),
-                  },
-                  {
-                    id: 'rep-' + Date.now(),
-                    sender: 'assistant',
-                    text: t.testDriveBooked(v),
-                  },
-                ]);
-              }}
+              onSubmitTestDrive={submitTestDrive}
             />
           )}
 
           {/* Scrollable Conversation messages list */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3.5 bg-gray-50/50">
+          <div
+            data-lambert-chat-thread=""
+            className={
+              showExpandedInventory
+                ? 'shrink-0 max-h-36 overflow-y-auto border-b border-gray-200 bg-gray-50/80 p-3 space-y-2'
+                : 'flex-1 min-h-0 overflow-y-auto p-4 space-y-3.5 bg-gray-50/50'
+            }
+          >
             {messages.map((msg) => (
               <div
                 key={msg.id}
@@ -1179,8 +1682,8 @@ export const ChatWidget: React.FC = () => {
                   )}
                 </div>
 
-                {/* Render Vehicle Cards from search if present */}
-                {msg.vehicles && msg.vehicles.length > 0 && (
+                {/* Docked widget stays a single column. Expanded results use the stage below. */}
+                {msg.vehicles && msg.vehicles.length > 0 && !isExpanded && (
                   <div className="mt-3 w-full space-y-3">
                     <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider px-1">
                       {t.vehicleResults(msg.vehicles.length)}
@@ -1190,6 +1693,7 @@ export const ChatWidget: React.FC = () => {
                         <VehicleCard
                           key={v.id}
                           vehicle={v}
+                          language={language}
                           onSelect={(car) => setSelectedVehicle(car)}
                         />
                       ))}
@@ -1201,6 +1705,18 @@ export const ChatWidget: React.FC = () => {
 
             <div ref={messagesEndRef} />
           </div>
+
+          {showExpandedInventory && (
+            <ExpandedInventory
+              vehicles={expandedVehicles}
+              selectedVehicle={selectedVehicle}
+              language={language}
+              resultsLabel={t.vehicleResults(expandedVehicles.length)}
+              onSelect={(car) => setSelectedVehicle(car)}
+              onBack={() => setSelectedVehicle(null)}
+              onSubmitTestDrive={submitTestDrive}
+            />
+          )}
 
           {/* REAL-TIME "LISTENING..." CARD WITH LIVE TRANSCRIPTION PREVIEW */}
           {voiceStatus === 'listening' && (
@@ -1274,7 +1790,10 @@ export const ChatWidget: React.FC = () => {
                   </span>
                   <button
                     type="button"
-                    onClick={submitVoiceTurn}
+                    onClick={() => {
+                      if (directPlatform) completeBrowserSpeech('click');
+                      else submitVoiceTurn();
+                    }}
                     className="inline-flex items-center gap-1.5 bg-[#991b1e] hover:bg-[#801618] active:scale-95 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-all cursor-pointer"
                   >
                     <span>{t.sendToAi}</span>
@@ -1320,7 +1839,7 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  audioPlaybackRef.current?.interrupt();
+                  silenceSpokenReply();
                   setVoiceStatus('idle');
                 }}
                 className="text-[11px] underline hover:text-red-900 cursor-pointer"
@@ -1332,6 +1851,12 @@ export const ChatWidget: React.FC = () => {
 
           {/* Footer Controls & Inputs */}
           <div className="bg-white border-t border-gray-200 p-3 space-y-2 shrink-0">
+            {voiceBridgeNotice && (
+              <p className="text-[11px] leading-snug text-[#991b1e] font-medium px-0.5" role="status">
+                {voiceBridgeNotice}
+              </p>
+            )}
+
             {/* Quick search suggestions */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
               <button
@@ -1388,7 +1913,9 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onPointerDown={handleMicPointerDown}
-                onPointerUp={handleMicPointerUp}
+                onPointerUp={(e) => finishMicHold(e, 'up')}
+                onPointerLeave={(e) => finishMicHold(e, 'leave')}
+                onPointerCancel={(e) => finishMicHold(e, 'cancel')}
                 className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs select-none touch-none shrink-0 transition-all shadow-xs cursor-pointer ${
                   voiceStatus === 'listening'
                     ? 'bg-red-700 text-white ring-4 ring-red-300 scale-95 animate-pulse'
@@ -1429,7 +1956,7 @@ export const ChatWidget: React.FC = () => {
 
             {/* Discreet Widget Version Footer */}
             <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1.5 px-0.5 select-none font-sans">
-              <span>{language === 'en' ? 'Automobile Lambert AI' : 'IA Automobile Lambert'}</span>
+              <span>{language === 'en' ? `${dealer.name} AI` : `IA ${dealer.name}`}</span>
               <span className="font-mono text-gray-400 font-medium tracking-tight">{WIDGET_VERSION}</span>
             </div>
           </div>

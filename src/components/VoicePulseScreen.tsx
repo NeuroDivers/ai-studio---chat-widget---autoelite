@@ -1,5 +1,6 @@
 import React from 'react';
 import { Mic, Activity } from 'lucide-react';
+import { useDealer } from '../dealerContext';
 
 interface VoicePulseScreenProps {
   transcript: string;
@@ -16,6 +17,7 @@ export const VoicePulseScreen: React.FC<VoicePulseScreenProps> = ({
   chunksSent = 0,
   language = 'fr',
 }) => {
+  const dealer = useDealer();
   const isEn = language === 'en';
   // Normalize volume for dynamic pulse visualizer
   const clampedVolume = Math.min(1, Math.max(0, volumeLevel * 3.5));
@@ -26,7 +28,7 @@ export const VoicePulseScreen: React.FC<VoicePulseScreenProps> = ({
       {/* Dealer Name & Status */}
       <div className="pt-2">
         <h2 className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight">
-          Automobile Lambert
+          {dealer.name}
         </h2>
         <div className="mt-1 flex items-center justify-center gap-2">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-black bg-red-100 text-[#991b1e] border border-red-200">
@@ -34,7 +36,7 @@ export const VoicePulseScreen: React.FC<VoicePulseScreenProps> = ({
             {isEn ? 'Listening...' : 'À l\'écoute...'}
           </span>
           <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">
-            {isEn ? 'Voice Advisor' : 'Conseiller Vocal'}
+            {dealer.agentRole}
           </p>
         </div>
       </div>

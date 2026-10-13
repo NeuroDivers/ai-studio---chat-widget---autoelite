@@ -6,6 +6,19 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from '@google/genai';
+import {
+  AUTOELITE_API_BASE,
+  DEFAULT_DEALER_ID,
+  DealerProfile,
+  PROTOTYPE_DEALER,
+  buildTextSystemPrompt,
+  buildVoiceSystemPrompt,
+  fetchDealerProfile,
+  fetchDealerVehicles,
+  localFactualReply,
+  prototypeInventory,
+} from './src/dealerPlatform.ts';
+import type { Vehicle } from './src/types/inventory.ts';
 
 dotenv.config();
 
@@ -18,15 +31,55 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = 3000;
 const server = createServer(app);
+const DEALER_ID = Number(process.env.DEALER_ID || DEFAULT_DEALER_ID);
+const API_BASE = process.env.AUTOELITE_API_BASE || AUTOELITE_API_BASE;
+const CACHE_MS = 60_000;
 
-// Inventory list for tool calls & server queries
-const INVENTORY = [
-  { id: 1, year: 2022, make: "Honda", model: "CR-V", trim: "EX-L", body_style: "VUS", drivetrain: "AWD", transmission: "automatique", fuel_type: "essence", exterior_color: "rouge", price: 32995, mileage: 41200, stock_number: "L2201", status: "available", photo: "https://images.unsplash.com/photo-1568844293986-8d0400bd4745?auto=format&fit=crop&w=800&q=80", description: "Honda CR-V EX-L 2022 AWD rouge avec toit ouvrant et sièges en cuir chauffants." },
-  { id: 2, year: 2021, make: "Toyota", model: "RAV4", trim: "XLE", body_style: "VUS", drivetrain: "AWD", transmission: "automatique", fuel_type: "essence", exterior_color: "noir", price: 29950, mileage: 53800, stock_number: "L2108", status: "available", photo: "https://images.unsplash.com/photo-1621007947382-bb3c3994e3fb?auto=format&fit=crop&w=800&q=80", description: "Toyota RAV4 XLE 2021 AWD noir avec hayon assisté et Toyota Safety Sense." },
-  { id: 3, year: 2020, make: "Mazda", model: "CX-5", trim: "GT", body_style: "VUS", drivetrain: "AWD", transmission: "automatique", fuel_type: "essence", exterior_color: "gris", price: 27400, mileage: 62110, stock_number: "L2044", status: "available", photo: "https://images.unsplash.com/photo-1542282088-72c9c27ed0cd?auto=format&fit=crop&w=800&q=80", description: "Mazda CX-5 GT 2020 AWD gris avec système audio Bose et affichage tête haute." },
-  { id: 4, year: 2019, make: "Hyundai", model: "Elantra", trim: "Preferred", body_style: "berline", drivetrain: "FWD", transmission: "automatique", fuel_type: "essence", exterior_color: "blanc", price: 16995, mileage: 80440, stock_number: "L1933", status: "available", photo: "https://images.unsplash.com/photo-1590362891988-f7780470208b?auto=format&fit=crop&w=800&q=80", description: "Hyundai Elantra Preferred 2019 berline blanc FWD très économique." },
-  { id: 5, year: 2018, make: "Ford", model: "F-150", trim: "XLT", body_style: "camion", drivetrain: "4x4", transmission: "automatique", fuel_type: "essence", exterior_color: "bleu", price: 28900, mileage: 97300, stock_number: "L1812", status: "available", photo: "https://images.unsplash.com/photo-1583121274602-3e2820c69888?auto=format&fit=crop&w=800&q=80", description: "Ford F-150 XLT 2018 SuperCrew 4x4 bleu avec ensemble de remorquage." }
-];
+let dealerCache: { at: number; data: DealerProfile } | null = null;
+let inventoryCache: { at: number; data: Vehicle[] } | null = null;
+
+async function getDealer(): Promise<DealerProfile> {
+  if (dealerCache && Date.now() - dealerCache.at < CACHE_MS) return dealerCache.data;
+  try {
+    const data = await fetchDealerProfile(DEALER_ID, API_BASE);
+    dealerCache = { at: Date.now(), data };
+    return data;
+  } catch (error) {
+    console.error('Dealer profile fetch failed', error);
+    return dealerCache?.data || { ...PROTOTYPE_DEALER, id: DEALER_ID };
+  }
+}
+
+async function getVehicles(search = ''): Promise<{ vehicles: Vehicle[]; source: 'autoelite' | 'prototype' }> {
+  const key = search.trim();
+  if (!key && inventoryCache && Date.now() - inventoryCache.at < CACHE_MS) {
+    return { vehicles: inventoryCache.data, source: 'autoelite' };
+  }
+  try {
+    const vehicles = await fetchDealerVehicles(key, DEALER_ID, API_BASE);
+    if (!key) inventoryCache = { at: Date.now(), data: vehicles };
+    return { vehicles, source: 'autoelite' };
+  } catch (error) {
+    console.error('Inventory fetch failed', error);
+    return { vehicles: prototypeInventory(key), source: 'prototype' };
+  }
+}
+
+app.get('/api/platform/context', async (_req, res) => {
+  const dealer = await getDealer();
+  res.json({ dealer, dealerId: DEALER_ID });
+});
+
+app.get('/api/platform/vehicles', async (req, res) => {
+  const search = typeof req.query.search === 'string' ? req.query.search : '';
+  const result = await getVehicles(search);
+  res.json({
+    vehicles: result.vehicles,
+    count: result.vehicles.length,
+    dealerId: DEALER_ID,
+    source: result.source,
+  });
+});
 
 // Initialize Google GenAI client
 const apiKey = process.env.GEMINI_API_KEY || '';
@@ -48,13 +101,23 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const isEn = lang === 'en';
-    const systemInstruction = isEn
-      ? `You are the friendly customer sales advisor at Automobile Lambert, a certified car dealership in Laval, Quebec.
-Contact: 1250 Curé-Labelle Blvd, Laval, QC. Phone: (450) 555-0199. Hours: 9:00 AM to 6:00 PM Monday through Friday, 10:00 AM to 4:00 PM Saturday.
-Respond concisely, politely, and warmly in English. Encourage the customer to test drive a vehicle or visit our showroom.`
-      : `Tu es le conseiller d'accueil chaleureux d'Automobile Lambert, un concessionnaire automobile certifié à Laval, Québec.
-Coordonnées : 1250 boul. Curé-Labelle, Laval, QC. Téléphone : (450) 555-0199. Heures : 9h00 à 18h00 du lundi au vendredi, 10h00 à 16h00 le samedi.
-Réponds brièvement et poliment en français québécois standard. Encourage le client à essayer un véhicule ou à passer nous voir en concession.`;
+    const dealer = await getDealer();
+    const factual = localFactualReply(message, dealer, isEn ? 'en' : 'fr');
+    if (factual) {
+      return res.json({ text: factual, source: 'dealer-profile' });
+    }
+
+    const { vehicles } = await getVehicles('');
+    const systemInstruction = buildTextSystemPrompt(dealer, vehicles, isEn ? 'en' : 'fr');
+
+    if (!apiKey) {
+      return res.json({
+        text: isEn
+          ? `${dealer.agentName} can help you search the live ${dealer.name} inventory. Call ${dealer.phone} or visit ${dealer.addressLine}.`
+          : `${dealer.agentName} peut vous aider à chercher dans l'inventaire en direct de ${dealer.name}. Appelez au ${dealer.phone} ou passez au ${dealer.addressLine}.`,
+        source: 'dealer-profile',
+      });
+    }
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
@@ -71,7 +134,7 @@ Réponds brièvement et poliment en français québécois standard. Encourage le
   }
 });
 
-// Helper to wrap raw 16-bit linear PCM into a pristine RIFF WAV with smooth 100ms cosine fade-out and 60ms silence tail
+// Wrap raw 16-bit PCM in a WAV with a cosine fade-out and a short silence tail so playback does not pop.
 function createWavWithFade(
   pcmBuffer: Buffer,
   sampleRate = 24000,
@@ -84,48 +147,42 @@ function createWavWithFade(
   const numFrames = Math.floor(pcmBuffer.length / blockAlign);
   const fadeOutFrames = Math.floor(sampleRate * (fadeOutMs / 1000));
   const silenceFrames = Math.floor(sampleRate * (silenceTailMs / 1000));
-
   const totalFrames = numFrames + silenceFrames;
   const outputPcmLength = totalFrames * blockAlign;
   const outPcm = Buffer.alloc(outputPcmLength);
   pcmBuffer.copy(outPcm, 0, 0, numFrames * blockAlign);
 
-  // Apply cosine fade-out on the last fadeOutFrames (50-100ms) to ensure clean termination
   if (numFrames > fadeOutFrames) {
     const startFrame = numFrames - fadeOutFrames;
-    for (let f = 0; f < fadeOutFrames; f++) {
-      const frameIdx = startFrame + f;
-      const gain = 0.5 * (1 + Math.cos((Math.PI * f) / fadeOutFrames));
-      for (let ch = 0; ch < numChannels; ch++) {
-        const offset = (frameIdx * numChannels + ch) * 2;
+    for (let frame = 0; frame < fadeOutFrames; frame++) {
+      const frameIdx = startFrame + frame;
+      const gain = 0.5 * (1 + Math.cos((Math.PI * frame) / fadeOutFrames));
+      for (let channel = 0; channel < numChannels; channel++) {
+        const offset = (frameIdx * numChannels + channel) * 2;
         const sampleVal = outPcm.readInt16LE(offset);
         outPcm.writeInt16LE(Math.round(sampleVal * gain), offset);
       }
     }
   }
 
-  // Trailing silence frames are 0, ensuring zero DC offset / no walkie-talkie release pop
-
-  // 44-byte standard RIFF header
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + outputPcmLength, 4);
   header.write('WAVE', 8);
   header.write('fmt ', 12);
   header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(1, 20);
   header.writeUInt16LE(numChannels, 22);
   header.writeUInt32LE(sampleRate, 24);
   header.writeUInt32LE(sampleRate * blockAlign, 28);
   header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(16, 34); // 16-bit
+  header.writeUInt16LE(16, 34);
   header.write('data', 36);
   header.writeUInt32LE(outputPcmLength, 40);
-
   return Buffer.concat([header, outPcm]);
 }
 
-// High-fidelity spoken greeting introduction audio endpoint (serves studio WAV with 0ms delay)
+// High-fidelity spoken greeting introduction audio endpoint (serves the studio Kore WAV)
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
@@ -151,12 +208,14 @@ app.get('/api/tts/greeting', async (req, res) => {
       });
     }
 
-    // Dynamic generation fallback with selected voice
+    // Dynamic generation fallback when no studio WAV is on disk.
+    const dealer = await getDealer();
+    const feminine = requestedVoice !== 'puck';
     const text = lang === 'en'
-      ? "Hello and welcome to Automobile Lambert in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?"
-      : (requestedVoice === 'puck'
-          ? "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui ?"
-          : "Bonjour et bienvenue chez Automobile Lambert à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?");
+      ? `Hello and welcome to ${dealer.name} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`
+      : (feminine
+          ? `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?`
+          : `Bonjour et bienvenue chez ${dealer.name} à Laval! Je suis votre conseiller virtuel. Comment puis-je vous aider aujourd'hui?`);
 
     const ttsRes = await ai.models.generateContent({
       model: 'gemini-3.8-flash-tts',
@@ -175,7 +234,7 @@ app.get('/api/tts/greeting', async (req, res) => {
     const audioBase64 = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     if (audioBase64) {
       const pcmBuffer = Buffer.from(audioBase64, 'base64');
-      const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 100, 60);
+      const wavBuffer = createWavWithFade(pcmBuffer, 24000, 1, 80, 30);
       return res.json({ audio: wavBuffer.toString('base64'), format: 'audio/wav', lang, voice: voiceName });
     }
     res.status(500).json({ error: 'Failed to generate audio' });
@@ -270,8 +329,8 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
       } else if (data.type === 'introduce') {
         const targetLang = data.lang === 'en' || currentLanguage === 'en' ? 'en' : 'fr';
         const greetingPrompt = targetLang === 'en'
-          ? "Say in clear, natural North American English at a normal conversational pace: 'Hello! I can help you find an available vehicle at Automobile Lambert.'"
-          : "Dis d'une voix naturelle, chaleureuse et fluide en français québécois : 'Bonjour! Je peux vous aider à trouver un véhicule disponible chez Automobile Lambert.'";
+          ? "Say in clear, natural North American English at a normal conversational pace: 'Hello and welcome to Automobile Lambert in Laval! I am your virtual advisor. How can I help you find your next vehicle today?'"
+          : "Dis d'une voix naturelle, chaleureuse et fluide en français québécois, à un rythme normal : 'Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?'";
         try {
           liveSession.sendClientContent({
             turns: [
@@ -321,8 +380,12 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
     console.log('Client WebSocket closed');
   });
 
-  // Connect to Gemini Live asynchronously with clean Kore voice
-  ai.live.connect({
+  // Connect to Gemini Live asynchronously with the selected Kore or Puck voice.
+  // Inventory and showroom facts come from the dealer platform for this dealer id.
+  void (async () => {
+    const dealer = await getDealer();
+    const { vehicles } = await getVehicles('');
+    return ai.live.connect({
     model: 'gemini-3.8-live',
     config: {
       responseModalities: [Modality.AUDIO],
@@ -331,26 +394,7 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
           prebuiltVoiceConfig: { voiceName: chosenVoice },
         },
       },
-      systemInstruction: `You are the bilingual (French and English) virtual voice advisor for Automobile Lambert, a certified car dealership in Laval, Quebec.
-${chosenVoice === 'Puck' ? "Your persona is Alex, a friendly and knowledgeable automotive sales advisor. In French, refer to yourself as 'conseiller virtuel' (masculine)." : "Your persona is Chloé, a warm and knowledgeable automotive sales advisor. In French, refer to yourself as 'conseillère virtuelle' (feminine)."}
-Contact: 1250 boul. Curé-Labelle, Laval, QC. Phone: (450) 555-0199. Hours: 9:00 AM to 6:00 PM Monday through Friday, 10:00 AM to 4:00 PM Saturday.
-
-VOICE, SPEED & ACCENT RULES:
-1. When speaking English: Speak with a native, standard North American English accent. NEVER use a fake, exaggerated, or forced French accent. Speak clearly, warmly, and naturally.
-2. When speaking French: Speak in clear, fluent, authentic Canadian French (Québec).
-3. Speed & Delivery: Speak at a normal, lively conversational pace. Never drag out syllables or speak slowly. Keep spoken answers concise (1 to 2 sentences max) so turns are snappy and responsive.
-4. Default preferred language for this session is ${currentLanguage === 'en' ? 'English' : 'French'}. If the user speaks English, answer in English. If the user speaks French, answer in French.
-
-Available inventory:
-- 2022 Honda CR-V EX-L, VUS / SUV, AWD, automatique / automatic, essence / gas, rouge / red, 32 995 $ CAD, 41 200 km, stock L2201
-- 2021 Toyota RAV4 XLE, VUS / SUV, AWD, automatique / automatic, essence / gas, noir / black, 29 950 $ CAD, 53 800 km, stock L2108
-- 2020 Mazda CX-5 GT, VUS / SUV, AWD, automatique / automatic, essence / gas, gris / grey, 27 400 $ CAD, 62 110 km, stock L2044
-- 2019 Hyundai Elantra Preferred, berline / sedan, FWD, automatique / automatic, essence / gas, blanc / white, 16 995 $ CAD, 80 440 km, stock L1933
-- 2018 Ford F-150 XLT, camion / truck, 4x4, automatique / automatic, essence / gas, bleu / blue, 28 900 $ CAD, 97 300 km, stock L1812
-
-Rules:
-1. Never invent vehicles not in this list.
-2. If the visitor asks for an SUV/VUS, a color, a budget, or a feature, name the vehicle and call showVehicles with the search query.`,
+      systemInstruction: buildVoiceSystemPrompt(dealer, vehicles, currentLanguage),
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       tools: [
@@ -375,7 +419,7 @@ Rules:
       ]
     },
     callbacks: {
-      onmessage: (message: LiveServerMessage) => {
+      onmessage: async (message: LiveServerMessage) => {
         if (isClosed || clientWs.readyState !== WebSocket.OPEN) return;
 
         // 1. Check for audio chunks and model text
@@ -446,23 +490,13 @@ Rules:
 
           for (const call of calls) {
             if (call.name === 'showVehicles') {
-              const searchParam = String((call.args as any)?.search || '').toLowerCase();
-              const matched = INVENTORY.filter(v => {
-                return (
-                  v.body_style.toLowerCase().includes(searchParam) ||
-                  v.exterior_color.toLowerCase().includes(searchParam) ||
-                  v.make.toLowerCase().includes(searchParam) ||
-                  v.model.toLowerCase().includes(searchParam) ||
-                  v.drivetrain.toLowerCase().includes(searchParam) ||
-                  searchParam.includes(v.body_style.toLowerCase()) ||
-                  searchParam.includes(v.exterior_color.toLowerCase())
-                );
-              });
+              const searchParam = String((call.args as any)?.search || '');
+              const matched = (await getVehicles(searchParam)).vehicles;
 
               clientWs.send(
                 JSON.stringify({
                   type: 'vehicles',
-                  vehicles: matched.length > 0 ? matched : INVENTORY.slice(0, 2),
+                  vehicles: matched,
                 })
               );
 
@@ -470,7 +504,8 @@ Rules:
                 id: call.id,
                 name: call.name,
                 response: {
-                  results: matched.length > 0 ? matched : INVENTORY.slice(0, 2),
+                  results: matched,
+                  count: matched.length,
                 },
               });
             }
@@ -527,6 +562,9 @@ Rules:
       );
       clientWs.close();
     }
+  });
+  })().catch((err) => {
+    console.error('Failed to prepare Gemini Live inventory:', err);
   });
 
   clientWs.on('close', () => {
