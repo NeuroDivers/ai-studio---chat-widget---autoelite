@@ -19,6 +19,7 @@ import { Vehicle } from '../types/inventory';
 import { useDealer } from '../dealerContext';
 import { VehicleCard } from './VehicleCard';
 import { VehicleDetailView } from './VehicleDetailView';
+import { ExpandedInventory } from './ExpandedInventory';
 import { VoicePulseScreen } from './VoicePulseScreen';
 import {
   loadVehicles,
@@ -43,6 +44,14 @@ interface ChatMessage {
 
 type Language = 'fr' | 'en';
 type VoiceMode = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+function latestResultVehicles(messages: ChatMessage[]): Vehicle[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const vehicles = messages[index].vehicles;
+    if (vehicles && vehicles.length > 0) return vehicles;
+  }
+  return [];
+}
 
 const STRINGS = {
   fr: {
@@ -1335,6 +1344,29 @@ export const ChatWidget: React.FC = () => {
     }, 400);
   };
 
+  const expandedVehicles = latestResultVehicles(messages);
+  const showExpandedInventory = isExpanded && expandedVehicles.length > 0;
+
+  const requestVehicleInfo = (vehicle: Vehicle) => {
+    setSelectedVehicle(null);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: 'req-' + Date.now(),
+        sender: 'user',
+        text: t.testDriveRequest(vehicle),
+      },
+      {
+        id: 'rep-' + Date.now(),
+        sender: 'assistant',
+        text:
+          language === 'en'
+            ? `Great choice! ${dealer.name} has received your test drive request for the ${vehicle.year} ${vehicle.make} ${vehicle.model}. An advisor will contact you shortly. You can also reach us at ${dealer.phone}.`
+            : `Excellente décision ! ${dealer.name} a bien noté votre demande d'essai pour le ${vehicle.year} ${vehicle.make} ${vehicle.model}. Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au ${dealer.phone}.`,
+      },
+    ]);
+  };
+
   return (
     <>
       {/* 1. Launcher: Round red chat bubble, bottom right */}
@@ -1494,35 +1526,24 @@ export const ChatWidget: React.FC = () => {
             />
           )}
 
-          {/* Vehicle Detail View if a vehicle card was clicked */}
-          {selectedVehicle && (
+          {/* Docked detail covers the thread. Expanded detail stays beside the list. */}
+          {selectedVehicle && !isExpanded && (
             <VehicleDetailView
               vehicle={selectedVehicle}
+              language={language}
               onBack={() => setSelectedVehicle(null)}
-              onRequestInfo={(v) => {
-                setSelectedVehicle(null);
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: 'req-' + Date.now(),
-                    sender: 'user',
-                    text: t.testDriveRequest(v),
-                  },
-                  {
-                    id: 'rep-' + Date.now(),
-                    sender: 'assistant',
-                    text:
-                      language === 'en'
-                        ? `Great choice! ${dealer.name} has received your test drive request for the ${v.year} ${v.make} ${v.model}. An advisor will contact you shortly. You can also reach us at ${dealer.phone}.`
-                        : `Excellente décision ! ${dealer.name} a bien noté votre demande d'essai pour le ${v.year} ${v.make} ${v.model}. Un conseiller vous contactera dans les plus brefs délais. Vous pouvez aussi nous appeler au ${dealer.phone}.`,
-                  },
-                ]);
-              }}
+              onRequestInfo={requestVehicleInfo}
             />
           )}
 
           {/* Scrollable Conversation messages list */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3.5 bg-gray-50/50">
+          <div
+            className={
+              showExpandedInventory
+                ? 'shrink-0 max-h-36 overflow-y-auto border-b border-gray-200 bg-gray-50/80 p-3 space-y-2'
+                : 'flex-1 min-h-0 overflow-y-auto p-4 space-y-3.5 bg-gray-50/50'
+            }
+          >
             {messages.map((msg) => (
               <div
                 key={msg.id}
@@ -1576,8 +1597,8 @@ export const ChatWidget: React.FC = () => {
                   )}
                 </div>
 
-                {/* Render Vehicle Cards from search if present */}
-                {msg.vehicles && msg.vehicles.length > 0 && (
+                {/* Docked widget stays a single column. Expanded results use the stage below. */}
+                {msg.vehicles && msg.vehicles.length > 0 && !isExpanded && (
                   <div className="mt-3 w-full space-y-3">
                     <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider px-1">
                       {t.vehicleResults(msg.vehicles.length)}
@@ -1587,6 +1608,7 @@ export const ChatWidget: React.FC = () => {
                         <VehicleCard
                           key={v.id}
                           vehicle={v}
+                          language={language}
                           onSelect={(car) => setSelectedVehicle(car)}
                         />
                       ))}
@@ -1598,6 +1620,18 @@ export const ChatWidget: React.FC = () => {
 
             <div ref={messagesEndRef} />
           </div>
+
+          {showExpandedInventory && (
+            <ExpandedInventory
+              vehicles={expandedVehicles}
+              selectedVehicle={selectedVehicle}
+              language={language}
+              resultsLabel={t.vehicleResults(expandedVehicles.length)}
+              onSelect={(car) => setSelectedVehicle(car)}
+              onBack={() => setSelectedVehicle(null)}
+              onRequestInfo={requestVehicleInfo}
+            />
+          )}
 
           {/* REAL-TIME "LISTENING..." CARD WITH LIVE TRANSCRIPTION PREVIEW */}
           {voiceStatus === 'listening' && (
