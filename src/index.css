@@ -115,6 +115,40 @@
   }
 }
 
+/* Detail pane interior: gallery beside specs once the pane itself is wide. */
+.lambert-split-detail {
+  container-type: inline-size;
+  container-name: lambert-detail;
+}
+
+.lambert-detail-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.lambert-detail-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.lambert-detail-gallery,
+.lambert-detail-specs {
+  min-width: 0;
+}
+
+.lambert-detail-specs {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.lambert-detail-specs > * {
+  flex-shrink: 0;
+}
+
 /* Expanded detail gallery: a contained 16:10 photo, not a short full-bleed banner. */
 .lambert-gallery {
   width: min(100%, 40rem);
@@ -209,4 +243,44 @@
   height: 100%;
   object-fit: cover;
   object-position: center;
+}
+
+/* Two columns only when the detail pane is at least 900px wide. Narrower panes stack. */
+@container lambert-detail (min-width: 900px) {
+  .lambert-detail-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .lambert-detail-columns {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 40rem) minmax(17rem, 1fr);
+    column-gap: 1.5rem;
+    align-items: stretch;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .lambert-detail-gallery {
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .lambert-gallery {
+    width: 100%;
+    margin-inline: 0;
+  }
+
+  .lambert-gallery-frame {
+    max-height: none;
+  }
+
+  .lambert-detail-specs {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
 }

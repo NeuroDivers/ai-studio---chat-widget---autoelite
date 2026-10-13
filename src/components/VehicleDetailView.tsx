@@ -227,50 +227,56 @@ export const VehicleDetailView: React.FC<VehicleDetailViewProps> = ({
           )}
         </div>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-          <div className="border-b border-gray-100 pb-3">
-            <h2 className="text-2xl font-bold leading-tight text-gray-900">{title}</h2>
-            <div className="mt-1.5 text-2xl font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
-          </div>
-
-          <VehicleGallery vehicle={vehicle} alt={photoAlt} copy={copy} />
-
-          <div className="@container">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 @min-[520px]:grid-cols-3">
-              {specs.map((spec) => (
-                <div key={spec.label} className="min-w-0">
-                  <dt className="text-[11px] font-medium text-gray-500">{spec.label}</dt>
-                  <dd className={`mt-0.5 truncate text-sm font-semibold text-gray-900 ${spec.label === copy.exterior || spec.label === copy.transmission ? 'capitalize' : ''}`}>{spec.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-
-          {vehicle.description ? (
-            <div className="space-y-1.5 rounded-xl border border-gray-200 bg-white p-3.5">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-gray-900">{copy.description}</h4>
-              <p className="text-xs leading-relaxed text-gray-700">{vehicle.description}</p>
+        <div className="lambert-detail-body min-h-0 flex-1" data-lambert-detail-body="">
+          <div className="lambert-detail-columns" data-lambert-detail-columns="">
+            <div className="lambert-detail-gallery" data-lambert-detail-gallery="">
+              <VehicleGallery vehicle={vehicle} alt={photoAlt} copy={copy} />
             </div>
-          ) : null}
 
-          <div className="space-y-2 pt-1">
-            <button
-              type="button"
-              onClick={() => onRequestInfo?.(vehicle)}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
-            >
-              <Calendar className="h-4 w-4" />
-              <span>{copy.testDrive}</span>
-            </button>
-            {dealer.phone ? (
-              <a
-                href={dealer.phoneHref || undefined}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-800 transition-colors hover:bg-gray-200"
-              >
-                <Phone className="h-3.5 w-3.5 text-gray-600" />
-                <span>{copy.call(dealer.phone)}</span>
-              </a>
-            ) : null}
+            <div className="lambert-detail-specs" data-lambert-detail-specs="">
+              <div className="border-b border-gray-100 pb-3">
+                <h2 className="text-2xl font-bold leading-tight text-gray-900">{title}</h2>
+                <div className="mt-1.5 text-2xl font-black text-[#991b1e]">{formatCadPrice(vehicle.price)}</div>
+              </div>
+
+              <div className="@container">
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+                  {specs.map((spec) => (
+                    <div key={spec.label} className={`min-w-0 ${spec.label === copy.vin ? 'col-span-2' : ''}`}>
+                      <dt className="text-[11px] font-medium text-gray-500">{spec.label}</dt>
+                      <dd className={`mt-0.5 text-sm font-semibold break-words text-gray-900 ${spec.label === copy.vin ? 'font-mono text-[13px] break-all' : ''} ${spec.label === copy.exterior || spec.label === copy.transmission ? 'capitalize' : ''}`}>{spec.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+
+              {vehicle.description ? (
+                <div className="space-y-1.5 rounded-xl border border-gray-200 bg-white p-3.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-gray-900">{copy.description}</h4>
+                  <p className="text-xs leading-relaxed text-gray-700">{vehicle.description}</p>
+                </div>
+              ) : null}
+
+              <div className="space-y-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onRequestInfo?.(vehicle)}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#991b1e] px-4 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-[#801618] active:bg-[#6b1214]"
+                >
+                  <Calendar className="h-4 w-4" />
+                  <span>{copy.testDrive}</span>
+                </button>
+                {dealer.phone ? (
+                  <a
+                    href={dealer.phoneHref || undefined}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-800 transition-colors hover:bg-gray-200"
+                  >
+                    <Phone className="h-3.5 w-3.5 text-gray-600" />
+                    <span>{copy.call(dealer.phone)}</span>
+                  </a>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
       </div>
