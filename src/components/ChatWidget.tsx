@@ -135,18 +135,67 @@ function greetingFor(lang: Language, dealerName: string): string {
     : `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?`;
 }
 
+/**
+ * Detects the language from the Automobile Lambert parent website:
+ * 1. Read window.location.pathname on the parent page.
+ * 2. First segment fr (/fr, /fr/, /fr/inventory, and so on) means French ('fr').
+ * 3. First segment en means English ('en').
+ * 4. First segment es means French ('fr'). The widget has only fr and en.
+ *    Do not map Spanish to English, and do not consult document.documentElement.lang on /es.
+ * 5. If there is no fr / en / es prefix (the brief moment on / before React Router replaces it with /fr),
+ *    use document.documentElement.lang only when its primary tag is fr or en.
+ *    Otherwise use French ('fr'), the dealership default.
+ */
+export function languageFromSite(): Language {
+  if (typeof window === 'undefined') {
+    return 'fr';
+  }
+
+  const pathname = window.location.pathname || '';
+  const segments = pathname.split('/').filter(Boolean);
+  const firstSegment = segments[0]?.toLowerCase();
+
+  if (firstSegment === 'fr') {
+    return 'fr';
+  }
+
+  if (firstSegment === 'en') {
+    return 'en';
+  }
+
+  if (firstSegment === 'es') {
+    return 'fr';
+  }
+
+  if (typeof document !== 'undefined' && document.documentElement) {
+    const docLang = (document.documentElement.lang || '').trim().toLowerCase();
+    const primaryTag = docLang.split(/[-_]/)[0];
+    if (primaryTag === 'fr') {
+      return 'fr';
+    }
+    if (primaryTag === 'en') {
+      return 'en';
+    }
+  }
+
+  return 'fr';
+}
+
 export const ChatWidget: React.FC = () => {
   const dealer = useDealer();
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
-  const [language, setLanguage] = useState<Language>('fr');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'init-greeting',
-      sender: 'assistant',
-      text: STRINGS.fr.greetingText,
-    },
-  ]);
+  const [language, setLanguage] = useState<Language>(() => languageFromSite());
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const initLang = languageFromSite();
+    return [
+      {
+        id: 'init-greeting',
+        sender: 'assistant',
+        text: greetingFor(initLang, dealer.name),
+      },
+    ];
+  });
   const [inputText, setInputText] = useState<string>('');
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
 
@@ -249,6 +298,88 @@ export const ChatWidget: React.FC = () => {
     }
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
   }, [dealer.name, isPlayingIntro, language]);
+
+  // In-widget FR/EN stays until the parent site language itself changes.
+  const lastSiteLanguageRef = useRef<Language>(languageFromSite());
+
+  // Subscribe to parent page URL (popstate, pushState, replaceState, MutationObserver)
+  useEffect(() => {
+    const checkSiteLanguage = () => {
+      const detected = languageFromSite();
+      if (detected !== lastSiteLanguageRef.current) {
+        lastSiteLanguageRef.current = detected;
+        handleLanguageChange(detected);
+      }
+    };
+
+    // Re-detect on mount and after first paint (handles React Router homepage replace from / to /fr)
+    checkSiteLanguage();
+    const t1 = setTimeout(checkSiteLanguage, 50);
+    const t2 = setTimeout(checkSiteLanguage, 250);
+
+    // 1. Popstate listener (browser back and forward)
+    window.addEventListener('popstate', checkSiteLanguage);
+
+    // 2. Wrap history.pushState and history.replaceState (React Router language changes don't fire popstate)
+    const originalPushState = window.history.pushState;
+    const originalReplaceState = window.history.replaceState;
+
+    window.history.pushState = function (...args: Parameters<typeof originalPushState>) {
+      const result = originalPushState.apply(this, args);
+      try {
+        checkSiteLanguage();
+      } catch (err) {
+        console.warn('Site lang check error in pushState:', err);
+      }
+      return result;
+    };
+
+    window.history.replaceState = function (...args: Parameters<typeof originalReplaceState>) {
+      const result = originalReplaceState.apply(this, args);
+      try {
+        checkSiteLanguage();
+      } catch (err) {
+        console.warn('Site lang check error in replaceState:', err);
+      }
+      return result;
+    };
+
+    // 3. MutationObserver on document.documentElement / #root / document.body (outside shadow root)
+    let observer: MutationObserver | null = null;
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        observer = new MutationObserver(() => {
+          checkSiteLanguage();
+        });
+        if (document.documentElement) {
+          observer.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['lang'],
+          });
+        }
+        const rootElement = document.getElementById('root') || document.body;
+        if (rootElement) {
+          observer.observe(rootElement, {
+            childList: true,
+            subtree: true,
+          });
+        }
+      } catch (err) {
+        console.warn('MutationObserver setup error:', err);
+      }
+    }
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      window.removeEventListener('popstate', checkSiteLanguage);
+      window.history.pushState = originalPushState;
+      window.history.replaceState = originalReplaceState;
+      if (observer) {
+        observer.disconnect();
+      }
+    };
+  }, [handleLanguageChange]);
 
   // Play the studio greeting recording. Kore is the default file for each language.
   const playGreetingIntro = useCallback(async () => {
