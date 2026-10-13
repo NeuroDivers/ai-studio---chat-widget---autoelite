@@ -136,6 +136,21 @@ function greetingFor(lang: Language, dealerName: string): string {
     : `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?`;
 }
 
+function spokenVehicleName(vehicle: Vehicle): string {
+  return [vehicle.year, vehicle.make, vehicle.model]
+    .filter((part) => part !== undefined && part !== null && String(part).trim() !== '')
+    .join(' ');
+}
+
+/** Bubble sentence, plus the first three cards as "year make model". */
+export function spokenMicReply(text: string, vehicles?: Vehicle[]): string {
+  const sentence = text.replace(/\s+/g, ' ').trim();
+  const names = (vehicles || []).slice(0, 3).map(spokenVehicleName).filter((name) => name.length > 0);
+  if (!sentence) return names.join('. ');
+  if (names.length === 0) return sentence;
+  return `${sentence} ${names.join('. ')}`;
+}
+
 /**
  * Detects the language from the Automobile Lambert parent website:
  * 1. Read window.location.pathname on the parent page.
@@ -233,6 +248,9 @@ export const ChatWidget: React.FC = () => {
   const speechCancelRef = useRef<boolean>(false);
   const speechCompletingRef = useRef<boolean>(false);
   const speechUnavailableNotedRef = useRef<boolean>(false);
+  const speechHandledRef = useRef<boolean>(false);
+  const micHoldActiveRef = useRef<boolean>(false);
+  const speechUtteranceRef = useRef<number>(0);
   const hasReceivedModelAudioRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const holdStartTimeRef = useRef<number>(0);
@@ -485,6 +503,10 @@ export const ChatWidget: React.FC = () => {
     if (draftId) {
       setMessages((prev) => prev.filter((message) => message.id !== draftId));
     }
+    speechUtteranceRef.current += 1;
+    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
+      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
+    }
     setLastDebugEvent('Écoute annulée');
   }, [cleanStopRecording]);
 
@@ -533,14 +555,47 @@ export const ChatWidget: React.FC = () => {
     setLastDebugEvent(t.speechUnavailable);
   }, [t.speechUnavailable]);
 
-  const completeBrowserSpeech = useCallback((reason: 'click' | 'end') => {
+  const speakMicReply = useCallback((text: string, vehicles?: Vehicle[]) => {
+    if (!directPlatform) return false;
+    const spoken = spokenMicReply(text, vehicles);
+    if (!spoken) return false;
+    if (typeof window === 'undefined') return false;
+    const synthesis = window.speechSynthesis;
+    const UtteranceCtor = window.SpeechSynthesisUtterance;
+    if (!synthesis || typeof synthesis.speak !== 'function' || typeof synthesis.cancel !== 'function' || typeof UtteranceCtor !== 'function') {
+      return false;
+    }
+    try {
+      synthesis.cancel();
+      const utterance = new UtteranceCtor(spoken);
+      utterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
+      const token = speechUtteranceRef.current + 1;
+      speechUtteranceRef.current = token;
+      const finish = () => {
+        if (speechUtteranceRef.current !== token) return;
+        setVoiceStatus((status) => (status === 'speaking' ? 'idle' : status));
+      };
+      utterance.onend = finish;
+      utterance.onerror = finish;
+      synthesis.speak(utterance);
+      return true;
+    } catch (error) {
+      console.warn('Speech synthesis unavailable', error);
+      return false;
+    }
+  }, [language]);
+
+  const completeBrowserSpeech = useCallback((reason: 'click' | 'end' | 'release') => {
     if (speechCancelRef.current) return;
-    if (speechCompletingRef.current) return;
+    if (speechHandledRef.current || speechCompletingRef.current) return;
     if (reason === 'end' && !isListeningRef.current) return;
 
     const query = speechTranscriptRef.current.trim();
+    speechTranscriptRef.current = '';
+    speechHandledRef.current = true;
     speechCompletingRef.current = true;
     isListeningRef.current = false;
+    micHoldActiveRef.current = false;
 
     const recognition = speechRecognitionRef.current;
     speechRecognitionRef.current = null;
@@ -585,7 +640,8 @@ export const ChatWidget: React.FC = () => {
               : message
           )
         );
-        setVoiceStatus('idle');
+        const spoke = speakMicReply(reply.text, reply.vehicles);
+        setVoiceStatus(spoke ? 'speaking' : 'idle');
       })
       .catch(() => {
         const text =
@@ -597,12 +653,13 @@ export const ChatWidget: React.FC = () => {
             message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
           )
         );
-        setVoiceStatus('idle');
+        const spoke = speakMicReply(text);
+        setVoiceStatus(spoke ? 'speaking' : 'idle');
       })
       .finally(() => {
         speechCompletingRef.current = false;
       });
-  }, [composeReply, language]);
+  }, [composeReply, language, speakMicReply]);
 
   const startBrowserSpeech = useCallback(() => {
     if (isListeningRef.current || speechCompletingRef.current) return;
@@ -616,6 +673,7 @@ export const ChatWidget: React.FC = () => {
     speechCancelRef.current = false;
     speechTranscriptRef.current = '';
     speechCompletingRef.current = false;
+    speechHandledRef.current = false;
     isListeningRef.current = true;
     const draftId = 'speech-live-' + Date.now();
     speechDraftIdRef.current = draftId;
@@ -625,8 +683,9 @@ export const ChatWidget: React.FC = () => {
     setVolumeLevel(0);
     setLastDebugEvent(`Écoute du navigateur (${language === 'en' ? 'en-US' : 'fr-CA'})`);
 
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+    speechUtteranceRef.current += 1;
+    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
+      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
     }
     audioPlaybackRef.current?.interrupt();
     setIsPlayingIntro(false);
@@ -907,7 +966,8 @@ export const ChatWidget: React.FC = () => {
                 : message
             )
           );
-          setVoiceStatus('idle');
+          const spoke = speakMicReply(reply.text, reply.vehicles);
+          setVoiceStatus(spoke ? 'speaking' : 'idle');
         })
         .catch(() => {
           const text =
@@ -919,7 +979,8 @@ export const ChatWidget: React.FC = () => {
               message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
             )
           );
-          setVoiceStatus('idle');
+          const spoke = speakMicReply(text);
+          setVoiceStatus(spoke ? 'speaking' : 'idle');
         });
       setLiveTranscript('');
       return;
@@ -965,7 +1026,7 @@ export const ChatWidget: React.FC = () => {
     }, 4500);
 
     setLiveTranscript('');
-  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, voiceStatus]);
+  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, speakMicReply, voiceStatus]);
 
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
@@ -973,14 +1034,21 @@ export const ChatWidget: React.FC = () => {
     if (directPlatform) {
       if (voiceStatus === 'thinking' || speechCompletingRef.current) return;
       if (voiceStatus === 'listening' || isListeningRef.current) {
+        micHoldActiveRef.current = false;
         completeBrowserSpeech('click');
         return;
       }
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      } catch { /* pointer already released */ }
+      holdStartTimeRef.current = Date.now();
+      micHoldActiveRef.current = true;
       startBrowserSpeech();
       return;
     }
     if (voiceStatus === 'listening') {
       // If already listening in click-to-talk mode, clicking sends!
+      micHoldActiveRef.current = false;
       submitVoiceTurn();
       return;
     }
@@ -989,23 +1057,47 @@ export const ChatWidget: React.FC = () => {
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     } catch {}
 
+    holdStartTimeRef.current = Date.now();
+    micHoldActiveRef.current = true;
     startListening();
   };
 
-  // Pointer Up on Mic button
-  const handleMicPointerUp = (e: React.PointerEvent) => {
+  // Release of a press submits. A short tap stays in click-toggle mode for a second click.
+  const finishMicHold = (e: React.PointerEvent, source: 'up' | 'leave' | 'cancel') => {
     e.preventDefault();
-    if (directPlatform) return;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {}
-
-    const holdDuration = Date.now() - holdStartTimeRef.current;
-    // If held for more than 450ms, release acts as "stop & send"
-    // If quickly tapped (< 450ms), stay in listening mode so user can speak comfortably
-    if (holdDuration > 450 && isListeningRef.current) {
-      submitVoiceTurn();
+    if (source !== 'leave') {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+      } catch { /* capture already released */ }
     }
+
+    if (!micHoldActiveRef.current) return;
+    const holdDuration = Date.now() - holdStartTimeRef.current;
+    // Scaling the button can emit pointerleave while the finger is still down.
+    if (source === 'leave' && holdDuration <= 450) return;
+
+    micHoldActiveRef.current = false;
+    if (holdDuration <= 450 || (!isListeningRef.current && voiceStatus !== 'listening')) return;
+    if (directPlatform) {
+      const recognition = speechRecognitionRef.current;
+      if (recognition && typeof recognition.stop === 'function') {
+        try { recognition.stop(); } catch { /* already stopped */ }
+      }
+      // stop() may emit the final result and onend, which submits once.
+      if (speechHandledRef.current || speechCompletingRef.current) return;
+      if (!speechTranscriptRef.current.trim()) {
+        const holdToken = holdStartTimeRef.current;
+        window.setTimeout(() => {
+          if (speechHandledRef.current || speechCompletingRef.current) return;
+          if (holdStartTimeRef.current !== holdToken || !isListeningRef.current) return;
+          completeBrowserSpeech('release');
+        }, 180);
+        return;
+      }
+      completeBrowserSpeech('release');
+      return;
+    }
+    submitVoiceTurn();
   };
 
   // Handle typed text messages
@@ -1481,6 +1573,10 @@ export const ChatWidget: React.FC = () => {
                 type="button"
                 onClick={() => {
                   audioPlaybackRef.current?.interrupt();
+                  speechUtteranceRef.current += 1;
+                  if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
+                    try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
+                  }
                   setVoiceStatus('idle');
                 }}
                 className="text-[11px] underline hover:text-red-900 cursor-pointer"
@@ -1554,7 +1650,9 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onPointerDown={handleMicPointerDown}
-                onPointerUp={handleMicPointerUp}
+                onPointerUp={(e) => finishMicHold(e, 'up')}
+                onPointerLeave={(e) => finishMicHold(e, 'leave')}
+                onPointerCancel={(e) => finishMicHold(e, 'cancel')}
                 className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs select-none touch-none shrink-0 transition-all shadow-xs cursor-pointer ${
                   voiceStatus === 'listening'
                     ? 'bg-red-700 text-white ring-4 ring-red-300 scale-95 animate-pulse'
