@@ -92,7 +92,16 @@ export function isVehicleSearchQuery(query: string): boolean {
   return inventoryPhrases.some((phrase) => normalized.includes(normalizeText(phrase)));
 }
 
+/** Spoken and on-screen sentence when a search is too long to read vehicle by vehicle. */
+export function inventorySummary(count: number, lang: 'fr' | 'en'): string {
+  if (lang === 'en') {
+    return `I found ${count} vehicles. You can narrow this by year, price range, or model.`;
+  }
+  return `J'ai trouvé ${count} véhicules. Vous pouvez affiner la recherche par année, fourchette de prix ou modèle.`;
+}
+
 export function inventoryReplyText(query: string, count: number, lang: 'fr' | 'en'): string {
+  if (count > 3) return inventorySummary(count, lang);
   if (count === 1) {
     return lang === 'en'
       ? 'Here is the available vehicle matching your search:'

@@ -25,6 +25,7 @@ import {
   startVoiceSession,
   isVehicleSearchQuery,
   inventoryReplyText,
+  inventorySummary,
   answerDealer,
   directPlatform,
   LiveVoiceSession,
@@ -136,19 +137,159 @@ function greetingFor(lang: Language, dealerName: string): string {
     : `Bonjour et bienvenue chez ${dealerName} à Laval ! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui ?`;
 }
 
-function spokenVehicleName(vehicle: Vehicle): string {
-  return [vehicle.year, vehicle.make, vehicle.model]
-    .filter((part) => part !== undefined && part !== null && String(part).trim() !== '')
-    .join(' ');
+const COLOR_TO_EN: Record<string, string> = {
+  rouge: 'red',
+  red: 'red',
+  noir: 'black',
+  black: 'black',
+  blanc: 'white',
+  white: 'white',
+  bleu: 'blue',
+  blue: 'blue',
+  gris: 'gray',
+  grey: 'gray',
+  gray: 'gray',
+  argent: 'silver',
+  silver: 'silver',
+  vert: 'green',
+  green: 'green',
+  brun: 'brown',
+  brown: 'brown',
+  beige: 'beige',
+  orange: 'orange',
+  or: 'gold',
+  gold: 'gold',
+  jaune: 'yellow',
+  yellow: 'yellow',
+};
+
+const COLOR_TO_FR: Record<string, string> = {
+  red: 'rouge',
+  rouge: 'rouge',
+  black: 'noir',
+  noir: 'noir',
+  white: 'blanc',
+  blanc: 'blanc',
+  blue: 'bleu',
+  bleu: 'bleu',
+  gray: 'gris',
+  grey: 'gris',
+  gris: 'gris',
+  silver: 'argent',
+  argent: 'argent',
+  green: 'vert',
+  vert: 'vert',
+  brown: 'brun',
+  brun: 'brun',
+  beige: 'beige',
+  orange: 'orange',
+  gold: 'or',
+  or: 'or',
+  yellow: 'jaune',
+  jaune: 'jaune',
+};
+
+function spokenColor(raw: string, lang: Language): string {
+  const key = raw.trim().toLowerCase();
+  if (!key) return '';
+  const table = lang === 'en' ? COLOR_TO_EN : COLOR_TO_FR;
+  return table[key] || key;
 }
 
-/** Bubble sentence, plus the first three cards as "year make model". */
-export function spokenMicReply(text: string, vehicles?: Vehicle[]): string {
+function cardColor(vehicle: Vehicle): string {
+  const extra = vehicle as Vehicle & { color?: string | null };
+  const shown = vehicle.exterior_color || extra.color || '';
+  return String(shown).trim();
+}
+
+/** "2018 Volkswagen Tiguan, white" — year, make, model, and the card color. */
+function spokenVehiclePhrase(vehicle: Vehicle, lang: Language): string {
+  const name = [vehicle.year, vehicle.make, vehicle.model]
+    .filter((part) => part !== undefined && part !== null && String(part).trim() !== '')
+    .join(' ');
+  const color = spokenColor(cardColor(vehicle), lang);
+  if (!name) return color;
+  if (!color) return name;
+  return `${name}, ${color}`;
+}
+
+/**
+ * Mic reply text.
+ * More than three matches: the count summary only.
+ * One to three: the short match sentence, then each vehicle with year, make, model, and color.
+ */
+export function spokenMicReply(text: string, vehicles?: Vehicle[], lang: Language = 'fr'): string {
+  const list = vehicles || [];
+  if (list.length > 3) return inventorySummary(list.length, lang);
   const sentence = text.replace(/\s+/g, ' ').trim();
-  const names = (vehicles || []).slice(0, 3).map(spokenVehicleName).filter((name) => name.length > 0);
+  const names = list.map((vehicle) => spokenVehiclePhrase(vehicle, lang)).filter((name) => name.length > 0);
   if (!sentence) return names.join('. ');
   if (names.length === 0) return sentence;
-  return `${sentence} ${names.join('. ')}`;
+  const spoken = `${sentence} ${names.join('. ')}`;
+  return /[.!?]$/.test(spoken) ? spoken : `${spoken}.`;
+}
+
+type BrowserVoice = {
+  name: string;
+  lang: string;
+  voiceURI?: string;
+  default?: boolean;
+  gender?: string;
+};
+
+const FEMALE_VOICE = /\b(kore|female|woman|femme|zira|samantha|victoria|karen|moira|tessa|amelie|amélie|audrey|susan|linda|heather|fiona|kate|aria|jenny|sonia|nathalie|chloe|chloé|lea|léa|julie|sylvie|hortense|caroline|catherine|hazel|serena|allison|ava)\b/i;
+const MALE_VOICE = /\b(puck|male|homme|david|mark|daniel|fred|thomas|jacques|rishi|aaron|george|james|brian|ryan|claude|paul|henri|mathieu|guy|alex)\b/i;
+
+function hintedGender(voice: BrowserVoice): 'female' | 'male' | null {
+  const explicit = (voice.gender || '').toLowerCase();
+  if (explicit === 'female' || explicit === 'male') return explicit;
+  const blob = `${voice.name} ${voice.voiceURI || ''}`;
+  if (/\bpuck\b/i.test(blob)) return 'male';
+  if (/\bkore\b/i.test(blob)) return 'female';
+  const female = FEMALE_VOICE.test(blob);
+  const male = MALE_VOICE.test(blob);
+  if (male && !female) return 'male';
+  if (female && !male) return 'female';
+  return null;
+}
+
+/**
+ * Pick the browser voice that matches the greeting: Kore is feminine, Puck is masculine.
+ * A voice whose name contains Kore or Puck wins. Otherwise match gender inside fr-CA or en-US.
+ */
+export function chooseBrowserVoice<T extends BrowserVoice>(
+  voices: T[],
+  selected: 'Kore' | 'Puck',
+  lang: Language,
+): T | undefined {
+  if (!voices.length) return undefined;
+  const wanted: 'female' | 'male' = selected === 'Puck' ? 'male' : 'female';
+  const exact = lang === 'en' ? 'en-us' : 'fr-ca';
+  const prefix = lang === 'en' ? 'en' : 'fr';
+  const codeOf = (voice: T) => voice.lang.toLowerCase().replace('_', '-');
+  const langRank = (voice: T) => {
+    const code = codeOf(voice);
+    if (code === exact) return 0;
+    if (code.startsWith(`${prefix}-`) || code === prefix) return 1;
+    return 2;
+  };
+  const label = (voice: T) => `${voice.name} ${voice.voiceURI || ''}`;
+  const named = voices.filter((voice) => new RegExp(`\\b${selected}\\b`, 'i').test(label(voice)));
+  const namedInLang = named
+    .filter((voice) => langRank(voice) < 2)
+    .sort((a, b) => langRank(a) - langRank(b));
+  if (namedInLang[0]) return namedInLang[0];
+  if (named[0]) return named[0];
+
+  const inLanguage = voices.filter((voice) => langRank(voice) < 2);
+  const pool = inLanguage.length > 0 ? inLanguage : voices;
+  const ranked = [...pool].sort((a, b) => {
+    const genderScore = (voice: T) => (hintedGender(voice) === wanted ? 0 : hintedGender(voice) ? 2 : 1);
+    const byGender = genderScore(a) - genderScore(b);
+    if (byGender !== 0) return byGender;
+    return langRank(a) - langRank(b);
+  });
+  return ranked[0];
 }
 
 /**
@@ -272,6 +413,8 @@ export const ChatWidget: React.FC = () => {
     audioPlaybackRef.current = new AudioPlaybackController();
     if (!directPlatform) {
       audioCaptureRef.current = new AudioCaptureController();
+    } else if (typeof window !== 'undefined' && window.speechSynthesis?.getVoices) {
+      try { window.speechSynthesis.getVoices(); } catch { /* voices load on voiceschanged */ }
     }
 
     // Check navigator permissions if available
@@ -557,7 +700,7 @@ export const ChatWidget: React.FC = () => {
 
   const speakMicReply = useCallback((text: string, vehicles?: Vehicle[]) => {
     if (!directPlatform) return false;
-    const spoken = spokenMicReply(text, vehicles);
+    const spoken = spokenMicReply(text, vehicles, language);
     if (!spoken) return false;
     if (typeof window === 'undefined') return false;
     const synthesis = window.speechSynthesis;
@@ -568,7 +711,12 @@ export const ChatWidget: React.FC = () => {
     try {
       synthesis.cancel();
       const utterance = new UtteranceCtor(spoken);
+      // The live site has no public Kore/Puck TTS route that works without Turnstile.
+      // Match the greeting gender: Kore feminine, Puck masculine, in the widget language.
       utterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
+      const voices = typeof synthesis.getVoices === 'function' ? synthesis.getVoices() : [];
+      const chosen = chooseBrowserVoice(voices, selectedVoice, language);
+      if (chosen) utterance.voice = chosen;
       const token = speechUtteranceRef.current + 1;
       speechUtteranceRef.current = token;
       const finish = () => {
@@ -583,7 +731,7 @@ export const ChatWidget: React.FC = () => {
       console.warn('Speech synthesis unavailable', error);
       return false;
     }
-  }, [language]);
+  }, [language, selectedVoice]);
 
   const completeBrowserSpeech = useCallback((reason: 'click' | 'end' | 'release') => {
     if (speechCancelRef.current) return;
