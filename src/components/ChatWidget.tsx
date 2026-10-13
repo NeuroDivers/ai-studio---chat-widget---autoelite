@@ -32,6 +32,8 @@ import {
   LiveVoiceSession,
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
+import { fetchPlatformVoiceAudio } from '../platformVoice';
+import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget } from '../turnstile';
 
 interface ChatMessage {
   id: string;
@@ -401,6 +403,8 @@ export const ChatWidget: React.FC = () => {
   const speechHandledRef = useRef<boolean>(false);
   const micHoldActiveRef = useRef<boolean>(false);
   const speechUtteranceRef = useRef<number>(0);
+  const platformVoiceAbortRef = useRef<AbortController | null>(null);
+  const turnstileHostRef = useRef<HTMLDivElement | null>(null);
   const hasReceivedModelAudioRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const holdStartTimeRef = useRef<number>(0);
@@ -416,6 +420,16 @@ export const ChatWidget: React.FC = () => {
       )
     );
   }, [dealer.name, language]);
+
+  // Warm the invisible Turnstile widget inside the chat shadow root.
+  useEffect(() => {
+    if (!directPlatform || !isOpen) return;
+    const host = turnstileHostRef.current;
+    if (!host) return;
+    void prepareTurnstile(host).catch(() => {
+      /* A failed widget falls back to speechSynthesis when a mic reply is spoken. */
+    });
+  }, [isOpen]);
 
   // Initialize audio playback. Mic capture exists only beside a real studio socket.
   useEffect(() => {
@@ -640,6 +654,16 @@ export const ChatWidget: React.FC = () => {
     setVolumeLevel(0);
   }, []);
 
+  const silenceSpokenReply = useCallback(() => {
+    speechUtteranceRef.current += 1;
+    platformVoiceAbortRef.current?.abort();
+    platformVoiceAbortRef.current = null;
+    audioPlaybackRef.current?.interrupt();
+    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
+      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
+    }
+  }, []);
+
   // Cancel voice interaction without sending
   const cancelListening = useCallback(() => {
     speechCancelRef.current = true;
@@ -655,12 +679,9 @@ export const ChatWidget: React.FC = () => {
     if (draftId) {
       setMessages((prev) => prev.filter((message) => message.id !== draftId));
     }
-    speechUtteranceRef.current += 1;
-    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
-      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
-    }
+    silenceSpokenReply();
     setLastDebugEvent('Écoute annulée');
-  }, [cleanStopRecording]);
+  }, [cleanStopRecording, silenceSpokenReply]);
 
   const composeReply = useCallback(async (query: string): Promise<{ text: string; vehicles?: Vehicle[] }> => {
     const unreachable =
@@ -708,39 +729,73 @@ export const ChatWidget: React.FC = () => {
   }, [t.speechUnavailable]);
 
   const speakMicReply = useCallback((text: string, vehicles?: Vehicle[]) => {
-    if (!directPlatform) return false;
+    if (!directPlatform) return;
     const spoken = spokenMicReply(text, vehicles, language);
-    if (!spoken) return false;
-    if (typeof window === 'undefined') return false;
-    const synthesis = window.speechSynthesis;
-    const UtteranceCtor = window.SpeechSynthesisUtterance;
-    if (!synthesis || typeof synthesis.speak !== 'function' || typeof synthesis.cancel !== 'function' || typeof UtteranceCtor !== 'function') {
-      return false;
+    if (!spoken || typeof window === 'undefined') {
+      setVoiceStatus('idle');
+      return;
     }
-    try {
-      synthesis.cancel();
-      const utterance = new UtteranceCtor(spoken);
-      // The live site has no public Kore/Puck TTS route that works without Turnstile.
-      // Match the greeting gender: Kore feminine, Puck masculine, in the widget language.
-      utterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
-      const voices = typeof synthesis.getVoices === 'function' ? synthesis.getVoices() : [];
-      const chosen = chooseBrowserVoice(voices, selectedVoice, language);
-      if (chosen) utterance.voice = chosen;
-      const token = speechUtteranceRef.current + 1;
-      speechUtteranceRef.current = token;
-      const finish = () => {
-        if (speechUtteranceRef.current !== token) return;
-        setVoiceStatus((status) => (status === 'speaking' ? 'idle' : status));
-      };
-      utterance.onend = finish;
-      utterance.onerror = finish;
-      synthesis.speak(utterance);
-      return true;
-    } catch (error) {
-      console.warn('Speech synthesis unavailable', error);
-      return false;
-    }
-  }, [language, selectedVoice]);
+
+    silenceSpokenReply();
+    const utterance = speechUtteranceRef.current;
+    const abort = new AbortController();
+    platformVoiceAbortRef.current = abort;
+    const finish = () => {
+      if (speechUtteranceRef.current !== utterance) return;
+      setVoiceStatus((status) => (status === 'speaking' ? 'idle' : status));
+    };
+    const speakWithBrowser = () => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      const synthesis = window.speechSynthesis;
+      const UtteranceCtor = window.SpeechSynthesisUtterance;
+      if (!synthesis || typeof synthesis.speak !== 'function' || typeof synthesis.cancel !== 'function' || typeof UtteranceCtor !== 'function') {
+        setVoiceStatus('idle');
+        return;
+      }
+      try {
+        synthesis.cancel();
+        const browserUtterance = new UtteranceCtor(spoken);
+        // Kore is feminine and Puck is masculine when the platform voice is unavailable.
+        browserUtterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
+        const voices = typeof synthesis.getVoices === 'function' ? synthesis.getVoices() : [];
+        const chosen = chooseBrowserVoice(voices, selectedVoice, language);
+        if (chosen) browserUtterance.voice = chosen;
+        browserUtterance.onend = finish;
+        browserUtterance.onerror = finish;
+        synthesis.speak(browserUtterance);
+        setVoiceStatus('speaking');
+      } catch (error) {
+        console.warn('Speech synthesis unavailable', error);
+        setVoiceStatus('idle');
+      }
+    };
+
+    const host = turnstileHostRef.current;
+    const platformAttempt = host
+      ? obtainTurnstileToken(host)
+        .then((turnstileToken) => {
+          if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return null;
+          return fetchPlatformVoiceAudio(spoken, language, selectedVoice, turnstileToken, abort.signal);
+        })
+        .finally(() => {
+          if (speechUtteranceRef.current === utterance) resetTurnstileWidget();
+        })
+      : Promise.resolve(null);
+
+    void platformAttempt.then((audio) => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      if (audio && audioPlaybackRef.current) {
+        setVoiceStatus('speaking');
+        void audioPlaybackRef.current.playWavBase64(audio).finally(finish);
+        return;
+      }
+      speakWithBrowser();
+    }).catch((error) => {
+      if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return;
+      console.warn('Platform voice unavailable', error instanceof Error ? error.message : 'error');
+      speakWithBrowser();
+    });
+  }, [language, selectedVoice, silenceSpokenReply]);
 
   const completeBrowserSpeech = useCallback((reason: 'click' | 'end' | 'release') => {
     if (speechCancelRef.current) return;
@@ -797,8 +852,7 @@ export const ChatWidget: React.FC = () => {
               : message
           )
         );
-        const spoke = speakMicReply(reply.text, reply.vehicles);
-        setVoiceStatus(spoke ? 'speaking' : 'idle');
+        speakMicReply(reply.text, reply.vehicles);
       })
       .catch(() => {
         const text =
@@ -810,8 +864,7 @@ export const ChatWidget: React.FC = () => {
             message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
           )
         );
-        const spoke = speakMicReply(text);
-        setVoiceStatus(spoke ? 'speaking' : 'idle');
+        speakMicReply(text);
       })
       .finally(() => {
         speechCompletingRef.current = false;
@@ -840,10 +893,7 @@ export const ChatWidget: React.FC = () => {
     setVolumeLevel(0);
     setLastDebugEvent(`Écoute du navigateur (${language === 'en' ? 'en-US' : 'fr-CA'})`);
 
-    speechUtteranceRef.current += 1;
-    if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
-      try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
-    }
+    silenceSpokenReply();
     audioPlaybackRef.current?.interrupt();
     setIsPlayingIntro(false);
 
@@ -900,7 +950,7 @@ export const ChatWidget: React.FC = () => {
       setVoiceStatus('idle');
       noteSpeechUnavailable();
     }
-  }, [completeBrowserSpeech, language, noteSpeechUnavailable]);
+  }, [completeBrowserSpeech, language, noteSpeechUnavailable, silenceSpokenReply]);
 
   // Start Voice Session (Listening Mode). The dealer embed has no /api/live socket.
   const startListening = useCallback(async () => {
@@ -1123,8 +1173,7 @@ export const ChatWidget: React.FC = () => {
                 : message
             )
           );
-          const spoke = speakMicReply(reply.text, reply.vehicles);
-          setVoiceStatus(spoke ? 'speaking' : 'idle');
+          speakMicReply(reply.text, reply.vehicles);
         })
         .catch(() => {
           const text =
@@ -1136,8 +1185,7 @@ export const ChatWidget: React.FC = () => {
               message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
             )
           );
-          const spoke = speakMicReply(text);
-          setVoiceStatus(spoke ? 'speaking' : 'idle');
+          speakMicReply(text);
         });
       setLiveTranscript('');
       return;
@@ -1428,6 +1476,7 @@ export const ChatWidget: React.FC = () => {
               </div>
             </div>
 
+            <div ref={turnstileHostRef} data-turnstile-action="voice" className="shrink-0" />
             <div className="flex items-center gap-1 text-gray-500 shrink-0">
               <button
                 type="button"
@@ -1754,11 +1803,7 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  audioPlaybackRef.current?.interrupt();
-                  speechUtteranceRef.current += 1;
-                  if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.cancel === 'function') {
-                    try { window.speechSynthesis.cancel(); } catch { /* synthesis unavailable */ }
-                  }
+                  silenceSpokenReply();
                   setVoiceStatus('idle');
                 }}
                 className="text-[11px] underline hover:text-red-900 cursor-pointer"

@@ -248,9 +248,10 @@ export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<
  * The dealer site mints a short-lived Gemini Live token with:
  * POST https://api.autoelite.io/api/ai-proxy/gemini-live?ephemeral=1
  * body: { "dealerId": 2, "useEphemeral": true }
- * That route expects the dealer's Turnstile check, so the Studio server keeps a
- * local /api/live bridge. The live dealer embed has no such socket: it must not
- * open one, and a failed handshake must not reconnect.
+ * That route expects the dealer's Turnstile token in body.turnstileToken.
+ * Mic replies redeem a token there and speak with Kore or Puck. The Studio
+ * server keeps a local /api/live bridge. The live dealer embed must not open
+ * wss://automobile-lambert.com/api/live, and a failed handshake must not reconnect.
  */
 export async function startVoiceSession(
   callbacks: LiveVoiceSessionCallbacks,
