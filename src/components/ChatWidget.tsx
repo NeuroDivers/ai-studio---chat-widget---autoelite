@@ -35,6 +35,7 @@ import { AudioCaptureController, AudioPlaybackController } from '../utils/audio'
 import { fetchPlatformVoiceAudio } from '../platformVoice';
 import { obtainTurnstileToken, prepareTurnstile, resetTurnstileWidget, resolveTurnstileHost } from '../turnstile';
 import { chatTurnstileHost, submitTestDriveLead, TestDriveLeadDraft } from '../testDriveLead';
+import { reduceSpeechResults } from '../speechTranscript';
 
 interface ChatMessage {
   id: string;
@@ -408,6 +409,12 @@ export const ChatWidget: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isListeningRef = useRef<boolean>(false);
   const speechTranscriptRef = useRef<string>('');
+  /** Finalized text from earlier recognition sessions in this press. Interims are not included. */
+  const speechSessionBaseRef = useRef<string>('');
+  /** Latest finalized text, including the current session. Carried into a restart. */
+  const speechFinalTextRef = useRef<string>('');
+  const speechRestartTimerRef = useRef<number | null>(null);
+  const speechRecognitionFailedRef = useRef<boolean>(false);
   const speechDraftIdRef = useRef<string | null>(null);
   const speechCancelRef = useRef<boolean>(false);
   const speechCompletingRef = useRef<boolean>(false);
@@ -676,6 +683,10 @@ export const ChatWidget: React.FC = () => {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
+    if (speechRestartTimerRef.current !== null) {
+      window.clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
+    }
     audioCaptureRef.current?.stop();
     if (speechRecognitionRef.current) {
       const recognition = speechRecognitionRef.current;
@@ -702,6 +713,8 @@ export const ChatWidget: React.FC = () => {
   const cancelListening = useCallback(() => {
     speechCancelRef.current = true;
     speechTranscriptRef.current = '';
+    speechSessionBaseRef.current = '';
+    speechFinalTextRef.current = '';
     const draftId = speechDraftIdRef.current;
     speechDraftIdRef.current = null;
     cleanStopRecording();
@@ -832,12 +845,18 @@ export const ChatWidget: React.FC = () => {
   }, [language, selectedVoice, silenceSpokenReply]);
 
   const completeBrowserSpeech = useCallback((reason: 'click' | 'end' | 'release') => {
+    if (speechRestartTimerRef.current !== null) {
+      window.clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
+    }
     if (speechCancelRef.current) return;
     if (speechHandledRef.current || speechCompletingRef.current) return;
     if (reason === 'end' && !isListeningRef.current) return;
 
     const query = speechTranscriptRef.current.trim();
     speechTranscriptRef.current = '';
+    speechSessionBaseRef.current = '';
+    speechFinalTextRef.current = '';
     speechHandledRef.current = true;
     speechCompletingRef.current = true;
     isListeningRef.current = false;
@@ -916,9 +935,16 @@ export const ChatWidget: React.FC = () => {
 
     speechCancelRef.current = false;
     speechTranscriptRef.current = '';
+    speechSessionBaseRef.current = '';
+    speechFinalTextRef.current = '';
+    speechRecognitionFailedRef.current = false;
     speechCompletingRef.current = false;
     speechHandledRef.current = false;
     isListeningRef.current = true;
+    if (speechRestartTimerRef.current !== null) {
+      window.clearTimeout(speechRestartTimerRef.current);
+      speechRestartTimerRef.current = null;
+    }
     const draftId = 'speech-live-' + Date.now();
     speechDraftIdRef.current = draftId;
     setVoiceStatus('listening');
@@ -931,59 +957,91 @@ export const ChatWidget: React.FC = () => {
     audioPlaybackRef.current?.interrupt();
     setIsPlayingIntro(false);
 
-    let recognition: any;
-    try {
-      recognition = new SpeechRecognitionCtor();
-    } catch {
-      isListeningRef.current = false;
-      setVoiceStatus('idle');
-      noteSpeechUnavailable();
-      return;
-    }
-
-    recognition.lang = language === 'en' ? 'en-US' : 'fr-CA';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event: any) => {
-      const results = event?.results;
-      if (!results) return;
-      let text = '';
-      for (let i = 0; i < results.length; i++) {
-        text += results[i][0]?.transcript || '';
-      }
-      const trimmed = text.replace(/\s+/g, ' ').trim();
-      if (!trimmed) return;
+    const publishTranscript = (display: string) => {
+      const trimmed = display.trim();
       speechTranscriptRef.current = trimmed;
       setLiveTranscript(trimmed);
       setMessages((prev) => {
-        if (prev.some((message) => message.id === draftId)) {
+        const exists = prev.some((message) => message.id === draftId);
+        if (!trimmed) return exists ? prev.filter((message) => message.id !== draftId) : prev;
+        if (exists) {
           return prev.map((message) => (message.id === draftId ? { ...message, text: trimmed } : message));
         }
         return [...prev, { id: draftId, sender: 'user', text: trimmed, isVoice: true }];
       });
     };
-    recognition.onerror = (event: any) => {
-      const code = String(event?.error || '');
-      if (code === 'aborted' || code === 'no-speech') return;
-      if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture' || code === 'network') {
+
+    const armRecognition = () => {
+      let recognition: any;
+      try {
+        recognition = new SpeechRecognitionCtor();
+      } catch {
+        isListeningRef.current = false;
+        setVoiceStatus('idle');
+        noteSpeechUnavailable();
+        return;
+      }
+
+      recognition.lang = language === 'en' ? 'en-US' : 'fr-CA';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onresult = (event: any) => {
+        // Rebuild from the event. Final segments accumulate; the latest interim replaces.
+        const snapshot = reduceSpeechResults(speechSessionBaseRef.current, event?.results);
+        speechFinalTextRef.current = snapshot.finalText;
+        if (!snapshot.text.trim()) return;
+        publishTranscript(snapshot.text);
+      };
+      recognition.onerror = (event: any) => {
+        const code = String(event?.error || '');
+        if (code === 'aborted' || code === 'no-speech') return;
+        speechRecognitionFailedRef.current = true;
+        if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture' || code === 'network') {
+          noteSpeechUnavailable();
+        }
+      };
+      recognition.onend = () => {
+        if (speechCancelRef.current) return;
+        if (speechRecognitionRef.current !== recognition) return;
+        if (speechHandledRef.current || speechCompletingRef.current) return;
+        // Chrome often ends a session while the button is still held. Continue from
+        // finalized text only so the previous interim is not replayed.
+        if (micHoldActiveRef.current && isListeningRef.current && !speechRecognitionFailedRef.current) {
+          speechSessionBaseRef.current = speechFinalTextRef.current;
+          publishTranscript(speechSessionBaseRef.current);
+          if (speechRestartTimerRef.current !== null) return;
+          speechRestartTimerRef.current = window.setTimeout(() => {
+            speechRestartTimerRef.current = null;
+            if (speechCancelRef.current || speechHandledRef.current || speechCompletingRef.current) return;
+            if (speechRecognitionRef.current !== recognition) return;
+            if (!isListeningRef.current) return;
+            if (micHoldActiveRef.current && !speechRecognitionFailedRef.current) {
+              armRecognition();
+              return;
+            }
+            completeBrowserSpeech('end');
+          }, 200);
+          return;
+        }
+        completeBrowserSpeech('end');
+      };
+
+      speechRecognitionRef.current = recognition;
+      try {
+        recognition.start();
+      } catch {
+        if (speechTranscriptRef.current.trim()) {
+          completeBrowserSpeech('end');
+          return;
+        }
+        speechRecognitionRef.current = null;
+        isListeningRef.current = false;
+        setVoiceStatus('idle');
         noteSpeechUnavailable();
       }
     };
-    recognition.onend = () => {
-      if (speechCancelRef.current) return;
-      if (speechRecognitionRef.current !== recognition) return;
-      completeBrowserSpeech('end');
-    };
 
-    speechRecognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch {
-      speechRecognitionRef.current = null;
-      isListeningRef.current = false;
-      setVoiceStatus('idle');
-      noteSpeechUnavailable();
-    }
+    armRecognition();
   }, [completeBrowserSpeech, language, noteSpeechUnavailable, silenceSpokenReply]);
 
   // Start Voice Session (Listening Mode). The dealer embed has no /api/live socket.
@@ -1318,6 +1376,10 @@ export const ChatWidget: React.FC = () => {
     micHoldActiveRef.current = false;
     if (holdDuration <= 450 || (!isListeningRef.current && voiceStatus !== 'listening')) return;
     if (directPlatform) {
+      if (speechRestartTimerRef.current !== null) {
+        window.clearTimeout(speechRestartTimerRef.current);
+        speechRestartTimerRef.current = null;
+      }
       const recognition = speechRecognitionRef.current;
       if (recognition && typeof recognition.stop === 'function') {
         try { recognition.stop(); } catch { /* already stopped */ }
