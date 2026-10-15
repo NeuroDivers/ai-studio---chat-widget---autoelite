@@ -1083,10 +1083,7 @@ export const ChatWidget: React.FC = () => {
           recognition.continuous = true;
           recognition.interimResults = true;
           recognition.onresult = (evt: any) => {
-            let transcriptText = '';
-            for (let i = 0; i < evt.results.length; i++) {
-              transcriptText += evt.results[i][0].transcript;
-            }
+            const transcriptText = reduceSpeechResults('', evt?.results).text;
             if (transcriptText.trim()) {
               setLiveTranscript(transcriptText.trim());
               setLastDebugEvent(`Live SpeechRecognition: "${transcriptText.trim()}"`);

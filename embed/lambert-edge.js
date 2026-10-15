@@ -1,6 +1,7 @@
-const SOURCE_COMMIT = "777164eb5aea1671f8a0a688ef598f47190b5de5";
+const SOURCE_COMMIT = "8c51f75d4a9dc22cc56f6f4ce97073368d829730";
 const SOURCE_ROOT = `https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/${SOURCE_COMMIT}`;
 const CHAT_URL = `${SOURCE_ROOT}/embed/lambert-chat.js`;
+const CHAT_SCRIPT_SRC = `/lambert-chat.js?v=${SOURCE_COMMIT.slice(0, 7)}`;
 const ORIGIN = "https://automobile-richard-lambert.pages.dev";
 const GREETING_FILE = /^greeting-(?:en|fr|kore-en|kore-fr|puck-en)\.wav$/;
 const FAVICON_TYPES = {
@@ -76,8 +77,12 @@ export function rewriteHtml(html) {
     tags.push('<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png"/>');
   }
   out = ensureHeadTags(out, tags);
+  out = out.replace(
+    /(src=["'])\/lambert-chat\.js(?:\?[^"']*)?(["'])/gi,
+    `$1${CHAT_SCRIPT_SRC}$2`,
+  );
   if (!out.includes("/lambert-chat.js")) {
-    const tag = '<script src="/lambert-chat.js" defer></script>';
+    const tag = `<script src="${CHAT_SCRIPT_SRC}" defer></script>`;
     out = out.includes("</body>") ? out.replace("</body>", `${tag}</body>`) : `${out}${tag}`;
   }
   return out;
