@@ -34,10 +34,39 @@ function resultTranscript(result: SpeechResultLike | undefined): string {
 }
 
 /**
+ * True when `next` is a newer hypothesis of the same phrase as `previous`.
+ * "do you have" extends "do you". "do your" does not. " any Hondas" does not.
+ */
+function speechHypothesisExtends(previous: string, next: string): boolean {
+  const prev = previous.trim();
+  const nxt = next.trim();
+  if (!prev || !nxt) return false;
+  const prevFold = prev.toLowerCase();
+  const nextFold = nxt.toLowerCase();
+  if (!nextFold.startsWith(prevFold)) return false;
+  const boundary = nextFold.charAt(prevFold.length);
+  return boundary === '' || /\s/.test(boundary);
+}
+
+/**
+ * Keep a new segment, or replace the phrase when the recognizer repeated it.
+ * Chrome often puts the entire utterance so far in every result. Appending
+ * those overlaps glues "do you" + "do you have".
+ */
+function mergeSpeechSegment(previous: string, next: string): string {
+  if (!previous) return next;
+  if (!next) return previous;
+  if (speechHypothesisExtends(previous, next)) return next.trim();
+  if (speechHypothesisExtends(next, previous)) return previous;
+  return joinSpeechText(previous, next);
+}
+
+/**
  * Rebuild the in-progress phrase from one recognition result event.
  * `committedFinalText` is finalized text from earlier sessions only.
- * Final results in this event are concatenated. Each non-final result
- * replaces the interim phrase instead of being appended to it.
+ * Final segments are concatenated only when they do not overlap. A final
+ * transcript that starts with the text already accepted replaces it.
+ * The latest non-final result always replaces the interim.
  */
 export function reduceSpeechResults(
   committedFinalText: string,
@@ -51,13 +80,13 @@ export function reduceSpeechResults(
     const transcript = resultTranscript(result);
     if (!transcript) continue;
     if (result?.isFinal) {
-      sessionFinal = joinSpeechText(sessionFinal, transcript);
+      sessionFinal = mergeSpeechSegment(sessionFinal, transcript);
       interimText = '';
     } else {
       interimText = transcript;
     }
   }
-  const finalText = joinSpeechText(committedFinalText, sessionFinal);
-  const text = joinSpeechText(finalText, interimText);
+  const finalText = mergeSpeechSegment(committedFinalText, sessionFinal);
+  const text = interimText ? mergeSpeechSegment(finalText, interimText) : finalText;
   return { finalText, interimText, text };
 }
