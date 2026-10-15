@@ -182,12 +182,19 @@ function createWavWithFade(
   return Buffer.concat([header, outPcm]);
 }
 
+/** Marie and Kore play the Kore voice. Alex and Puck play the Puck voice. */
+function geminiVoiceFromRequest(value: unknown): 'Kore' | 'Puck' {
+  const name = String(value ?? '').trim().toLowerCase();
+  if (name === 'puck' || name === 'alex') return 'Puck';
+  return 'Kore';
+}
+
 // High-fidelity spoken greeting introduction audio endpoint (serves the studio Kore WAV)
 app.get('/api/tts/greeting', async (req, res) => {
   try {
     const lang = req.query.lang === 'en' ? 'en' : 'fr';
-    const requestedVoice = (req.query.voice as string)?.toLowerCase() === 'puck' ? 'puck' : 'kore';
-    const voiceName = requestedVoice === 'puck' ? 'Puck' : 'Kore';
+    const voiceName = geminiVoiceFromRequest(req.query.voice);
+    const requestedVoice = voiceName === 'Puck' ? 'puck' : 'kore';
 
     const specificWav = path.join(__dirname, 'public', 'audio', `greeting-${requestedVoice}-${lang}.wav`);
     const fallbackWav = path.join(__dirname, 'public', 'audio', `greeting-${lang}.wav`);
@@ -260,8 +267,7 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (clientWs: WebSocket, request: any) => {
   const reqUrl = new URL(request?.url || '', 'http://localhost');
   let currentLanguage: 'fr' | 'en' = reqUrl.searchParams.get('lang') === 'en' ? 'en' : 'fr';
-  const requestedVoice = reqUrl.searchParams.get('voice');
-  const chosenVoice = requestedVoice === 'Puck' ? 'Puck' : 'Kore';
+  const chosenVoice = geminiVoiceFromRequest(reqUrl.searchParams.get('voice'));
   console.log(`Client connected to Gemini Live voice bridge (lang: ${currentLanguage}, voice: ${chosenVoice})`);
 
   let liveSession: any = null;
@@ -328,9 +334,10 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
         audioBytesSentThisTurn = 0;
       } else if (data.type === 'introduce') {
         const targetLang = data.lang === 'en' || currentLanguage === 'en' ? 'en' : 'fr';
+        const role = chosenVoice === 'Puck' ? 'conseiller virtuel' : 'conseillère virtuelle';
         const greetingPrompt = targetLang === 'en'
           ? "Say in clear, natural North American English at a normal conversational pace: 'Hello and welcome to Automobile Lambert in Laval! I am your virtual advisor. How can I help you find your next vehicle today?'"
-          : "Dis d'une voix naturelle, chaleureuse et fluide en français québécois, à un rythme normal : 'Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre conseillère virtuelle. Comment puis-je vous aider aujourd'hui?'";
+          : `Dis d'une voix naturelle, chaleureuse et fluide en français québécois, à un rythme normal : 'Bonjour et bienvenue chez Automobile Lambert à Laval! Je suis votre ${role}. Comment puis-je vous aider aujourd'hui?'`;
         try {
           liveSession.sendClientContent({
             turns: [

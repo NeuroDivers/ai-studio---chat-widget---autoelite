@@ -142,7 +142,30 @@ const STRINGS = {
 
 export const WIDGET_VERSION = 'v2.4.0';
 
-function greetingFor(lang: Language, dealerName: string, voice: 'Kore' | 'Puck' = 'Kore'): string {
+/** Gemini prebuilt voice ids. Greeting files and the live audio API still use these. */
+export type GeminiVoiceId = 'Kore' | 'Puck';
+
+/** Names shown on the voice toggle. Marie is feminine. Alex is masculine. */
+export type VoiceName = 'Marie' | 'Alex';
+
+export interface VoiceProfile {
+  name: VoiceName;
+  /** Id sent to Gemini Live and TTS. Marie → Kore, Alex → Puck. */
+  id: GeminiVoiceId;
+  gender: 'female' | 'male';
+}
+
+export const VOICE_PROFILES: Record<VoiceName, VoiceProfile> = {
+  Marie: { name: 'Marie', id: 'Kore', gender: 'female' },
+  Alex: { name: 'Alex', id: 'Puck', gender: 'male' },
+};
+
+/** Map the visitor-facing name to the Gemini voice at the audio boundary. */
+export function geminiVoiceId(name: VoiceName): GeminiVoiceId {
+  return VOICE_PROFILES[name].id;
+}
+
+function greetingFor(lang: Language, dealerName: string, voice: VoiceName = 'Marie'): string {
   const feminine = VOICE_PROFILES[voice].gender === 'female';
   if (lang === 'en') {
     return `Hello and welcome to ${dealerName} in Laval! I'm your virtual advisor. How can I help you find your next vehicle today?`;
@@ -268,12 +291,13 @@ function hintedGender(voice: BrowserVoice): 'female' | 'male' | null {
 }
 
 /**
- * Pick the browser voice that matches the greeting: Kore is feminine, Puck is masculine.
- * A voice whose name contains Kore or Puck wins. Otherwise match gender inside fr-CA or en-US.
+ * Pick the browser voice that matches the greeting.
+ * The Gemini id is Kore for Marie (feminine) and Puck for Alex (masculine).
+ * A voice whose name contains that id wins. Otherwise match gender inside fr-CA or en-US.
  */
 export function chooseBrowserVoice<T extends BrowserVoice>(
   voices: T[],
-  selected: 'Kore' | 'Puck',
+  selected: GeminiVoiceId,
   lang: Language,
 ): T | undefined {
   if (!voices.length) return undefined;
@@ -305,16 +329,6 @@ export function chooseBrowserVoice<T extends BrowserVoice>(
   });
   return ranked[0];
 }
-
-export interface VoiceProfile {
-  id: 'Kore' | 'Puck';
-  gender: 'female' | 'male';
-}
-
-export const VOICE_PROFILES: Record<'Kore' | 'Puck', VoiceProfile> = {
-  Kore: { id: 'Kore', gender: 'female' },
-  Puck: { id: 'Puck', gender: 'male' },
-};
 
 /**
  * Detects the language from the Automobile Lambert parent website:
@@ -389,10 +403,10 @@ export const ChatWidget: React.FC = () => {
   const [showVoicePulseOverlay, setShowVoicePulseOverlay] = useState<boolean>(false);
 
   // Diagnostic / Debugging states
-  const [selectedVoice, setSelectedVoice] = useState<'Kore' | 'Puck'>('Kore');
+  const [selectedVoice, setSelectedVoice] = useState<VoiceName>('Marie');
   const [micPermissionState, setMicPermissionState] = useState<string>('unknown');
   const [webSocketStatus, setWebSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Kore HD activée)');
+  const [lastDebugEvent, setLastDebugEvent] = useState<string>('Prêt (Voix Marie HD activée)');
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestFeedback, setMicTestFeedback] = useState<string>('');
   const [voiceBridgeNotice, setVoiceBridgeNotice] = useState<string>('');
@@ -508,7 +522,7 @@ export const ChatWidget: React.FC = () => {
     setLastDebugEvent(`Langue changée: ${newLang.toUpperCase()}`);
   }, [dealer.name, isPlayingIntro, language, selectedVoice]);
 
-  const handleVoiceChange = useCallback((newVoice: 'Kore' | 'Puck') => {
+  const handleVoiceChange = useCallback((newVoice: VoiceName) => {
     if (newVoice === selectedVoice) return;
     if (isPlayingIntro) {
       audioPlaybackRef.current?.interrupt();
@@ -610,7 +624,7 @@ export const ChatWidget: React.FC = () => {
     };
   }, [handleLanguageChange]);
 
-  // Play the studio greeting recording. Kore is the default file for each language.
+  // Play the studio greeting recording. Marie (Kore) is the default file for each language.
   const playGreetingIntro = useCallback(async () => {
     if (isPlayingIntro) {
       audioPlaybackRef.current?.interrupt();
@@ -621,7 +635,8 @@ export const ChatWidget: React.FC = () => {
     setIsPlayingIntro(true);
     await audioPlaybackRef.current?.resume();
 
-    const voiceFile = selectedVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
+    const studioVoice = geminiVoiceId(selectedVoice);
+    const voiceFile = studioVoice === 'Puck' && language === 'en' ? 'puck-en' : language;
     // Version the file so browsers drop the older greeting that clicked at the end.
     const directWavUrl = `/audio/greeting-${voiceFile}.wav?v=3`;
 
@@ -635,7 +650,7 @@ export const ChatWidget: React.FC = () => {
 
     // 2. Fallback to API route with voice parameter if needed
     try {
-      const res = await fetch(`/api/tts/greeting?lang=${language}&voice=${selectedVoice}`);
+      const res = await fetch(`/api/tts/greeting?lang=${language}&voice=${studioVoice}`);
       if (res.ok) {
         const data = await res.json();
         if (data.wavUrl) {
@@ -802,10 +817,10 @@ export const ChatWidget: React.FC = () => {
       try {
         synthesis.cancel();
         const browserUtterance = new UtteranceCtor(spoken);
-        // Kore is feminine and Puck is masculine when the platform voice is unavailable.
+        // Marie (Kore) is feminine and Alex (Puck) is masculine when the platform voice is unavailable.
         browserUtterance.lang = language === 'en' ? 'en-US' : 'fr-CA';
         const voices = typeof synthesis.getVoices === 'function' ? synthesis.getVoices() : [];
-        const chosen = chooseBrowserVoice(voices, selectedVoice, language);
+        const chosen = chooseBrowserVoice(voices, geminiVoiceId(selectedVoice), language);
         if (chosen) browserUtterance.voice = chosen;
         browserUtterance.onend = finish;
         browserUtterance.onerror = finish;
@@ -822,7 +837,7 @@ export const ChatWidget: React.FC = () => {
       ? obtainTurnstileToken(host)
         .then((turnstileToken) => {
           if (abort.signal.aborted || speechUtteranceRef.current !== utterance) return null;
-          return fetchPlatformVoiceAudio(spoken, language, selectedVoice, turnstileToken, abort.signal);
+          return fetchPlatformVoiceAudio(spoken, language, geminiVoiceId(selectedVoice), turnstileToken, abort.signal);
         })
         .finally(() => {
           if (speechUtteranceRef.current === utterance) resetTurnstileWidget();
@@ -1121,7 +1136,7 @@ export const ChatWidget: React.FC = () => {
       setMicPermissionState('granted');
       setLastDebugEvent('Micro actif. Enregistrement en cours...');
 
-      // 3. Connect Gemini Live Session with selected language and Kore or Puck
+      // 3. Connect Gemini Live Session with selected language. Marie plays Kore, Alex plays Puck.
       setWebSocketStatus('connecting');
       const session = await startVoiceSession({
         onReady: () => {
@@ -1186,7 +1201,7 @@ export const ChatWidget: React.FC = () => {
           setVoiceStatus((s) => (s === 'speaking' ? 'idle' : s));
           setLastDebugEvent('WebSocket fermé');
         },
-      }, language, selectedVoice);
+      }, language, geminiVoiceId(selectedVoice));
 
       if (!isListeningRef.current) {
         session.close();
@@ -1575,7 +1590,7 @@ export const ChatWidget: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  const nextVoice = selectedVoice === 'Kore' ? 'Puck' : 'Kore';
+                  const nextVoice: VoiceName = selectedVoice === 'Marie' ? 'Alex' : 'Marie';
                   handleVoiceChange(nextVoice);
                 }}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer text-xs font-semibold shrink-0"
@@ -1584,7 +1599,7 @@ export const ChatWidget: React.FC = () => {
                     ? `Voice: ${selectedVoice} (Click to toggle)`
                     : `Voix : ${selectedVoice} (Cliquez pour changer)`
                 }
-                aria-label={`Voix ${selectedVoice}`}
+                aria-label={language === 'en' ? `Voice ${selectedVoice}` : `Voix ${selectedVoice}`}
               >
                 <Mic className="w-3 h-3 text-[#991b1e]" />
                 <span>{selectedVoice}</span>
