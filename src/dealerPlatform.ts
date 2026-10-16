@@ -427,21 +427,147 @@ function canonicalizeSearchText(text: string): string {
   return remaining.split(' ').map((token) => canonicalSearchToken(token)).join(' ');
 }
 
+const BRAND_CANONICAL: Record<string, string> = {
+  'mercedes-benz': 'Mercedes',
+  volkswagen: 'Volkswagen',
+  chevrolet: 'Chevrolet',
+  mitsubishi: 'Mitsubishi',
+  infiniti: 'Infiniti',
+  chrysler: 'Chrysler',
+  cadillac: 'Cadillac',
+  porsche: 'Porsche',
+  genesis: 'Genesis',
+  hyundai: 'Hyundai',
+  subaru: 'Subaru',
+  lincoln: 'Lincoln',
+  mercedes: 'Mercedes',
+  toyota: 'Toyota',
+  nissan: 'Nissan',
+  honda: 'Honda',
+  mazda: 'Mazda',
+  lexus: 'Lexus',
+  volvo: 'Volvo',
+  buick: 'Buick',
+  dodge: 'Dodge',
+  tesla: 'Tesla',
+  chevy: 'Chevrolet',
+  audi: 'Audi',
+  ford: 'Ford',
+  jeep: 'Jeep',
+  mini: 'Mini',
+  fiat: 'Fiat',
+  benz: 'Mercedes',
+  bmw: 'BMW',
+  gmc: 'GMC',
+  kia: 'Kia',
+  ram: 'Ram',
+  vw: 'Volkswagen',
+};
+
+const BRAND_KEYS = Object.keys(BRAND_CANONICAL).sort((a, b) => b.length - a.length);
+const BRAND_PATTERN = new RegExp(
+  `\\b(?:${BRAND_KEYS.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})s?\\b`,
+  'gi',
+);
+
+/**
+ * Distinct makes named in a question, in the order the visitor said them.
+ * "Hondas and Mazdas", "Honda et Mazda", and "Honda & Mazda" each return both.
+ */
+export function makesInQuestion(query: string): string[] {
+  const normalized = foldSearchToken(query).replace(/[’']/g, "'").replace(/&/g, ' and ');
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const match of normalized.matchAll(BRAND_PATTERN)) {
+    let token = match[0].toLowerCase();
+    if (token.endsWith('s') && !BRAND_CANONICAL[token]) token = token.slice(0, -1);
+    const label = BRAND_CANONICAL[token];
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
 export function canonicalBrandLabel(query: string): string | null {
-  const normalized = foldSearchToken(query).replace(/[’']/g, "'");
-  const aliases = [...SEARCH_STEMS, ...Object.keys(SEARCH_ALIASES)].sort((a, b) => b.length - a.length);
-  for (const alias of aliases) {
-    if (!/volkswagen|honda|toyota|mazda|hyundai|ford|kia|nissan|chevrolet|subaru|bmw|mercedes|audi|jeep|gmc|dodge|ram|acura|lexus|infiniti|volvo|porsche|buick|cadillac|chrysler|lincoln|genesis|tesla|mitsubishi|fiat|mini|vw|chevy|benz/.test(alias)) {
-      continue;
-    }
-    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`\\b${escaped}s?\\b`, 'i').test(normalized)) {
-      const canonical = SEARCH_ALIASES[alias] || (SEARCH_STEM_SET.has(alias) ? alias : alias);
-      const label = SEARCH_ALIASES[canonical] || canonical;
-      return label.charAt(0).toUpperCase() + label.slice(1);
+  return makesInQuestion(query)[0] ?? null;
+}
+
+/** One search string per make. A price in the original question is kept on each term. */
+export function makeSearchTerm(make: string, original: string): string {
+  const parsed = parseVehicleQuery(original);
+  const parts = [make];
+  if (parsed.maxPrice !== undefined) parts.push(`under ${parsed.maxPrice}`);
+  if (parsed.minPrice !== undefined) parts.push(`over ${parsed.minPrice}`);
+  return parts.join(' ');
+}
+
+/**
+ * More than one make is searched as separate terms.
+ * One make keeps the caller's original question.
+ */
+export function vehicleSearchPlan(query: string): { mode: 'single' } | { mode: 'makes'; terms: string[] } {
+  const makes = makesInQuestion(query);
+  if (makes.length > 1) {
+    return { mode: 'makes', terms: makes.map((make) => makeSearchTerm(make.toLowerCase(), query)) };
+  }
+  return { mode: 'single' };
+}
+
+export function mergeVehiclesById(groups: Vehicle[][]): Vehicle[] {
+  const seen = new Set<number>();
+  const merged: Vehicle[] = [];
+  for (const group of groups) {
+    for (const vehicle of group) {
+      if (seen.has(vehicle.id)) continue;
+      seen.add(vehicle.id);
+      merged.push(vehicle);
     }
   }
-  return null;
+  return merged;
+}
+
+const SEARCH_CONJUNCTIONS = new Set(['and', 'et', 'or', 'ou']);
+
+function vehicleHaystack(vehicle: Vehicle): string {
+  return [
+    vehicle.year,
+    vehicle.make,
+    vehicle.model,
+    vehicle.trim,
+    vehicle.body_style,
+    vehicle.body_label,
+    vehicle.drivetrain,
+    vehicle.exterior_color,
+    vehicle.transmission,
+    vehicle.fuel_type,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
+/** Match a preloaded inventory list. Several makes are a union, not one combined phrase. */
+export function filterCachedVehicles(vehicles: Vehicle[], searchText: string): Vehicle[] {
+  const makes = makesInQuestion(searchText);
+  if (makes.length > 1) {
+    return mergeVehiclesById(makes.map((make) => filterCachedVehicles(vehicles, makeSearchTerm(make, searchText))));
+  }
+  const parsed = parseVehicleQuery(searchText);
+  const wantedMake = makes.length === 1 ? makes[0].toLowerCase() : '';
+  const words = parsed.search
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word.length > 1 && !SEARCH_CONJUNCTIONS.has(word));
+  return vehicles.filter((vehicle) => {
+    if (parsed.maxPrice !== undefined && vehicle.price > parsed.maxPrice) return false;
+    if (parsed.minPrice !== undefined && vehicle.price < parsed.minPrice) return false;
+    if (wantedMake && words.length === 1 && words[0] === wantedMake) {
+      return vehicle.make.toLowerCase() === wantedMake;
+    }
+    if (!words.length) return true;
+    const haystack = vehicleHaystack(vehicle);
+    return words.every((word) => haystack.includes(word));
+  });
 }
 
 export function parseVehicleQuery(searchText: string): ParsedVehicleQuery {
