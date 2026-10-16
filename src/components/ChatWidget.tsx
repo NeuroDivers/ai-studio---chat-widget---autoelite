@@ -30,6 +30,7 @@ import {
   answerDealer,
   directPlatform,
   preloadDealerInventory,
+  mergeInventoryReply,
   LiveVoiceSession,
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
@@ -465,6 +466,8 @@ export const ChatWidget: React.FC = () => {
   const hasReceivedModelAudioRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const holdStartTimeRef = useRef<number>(0);
+  const inputValueRef = useRef<string>('');
+  const replySlotsRef = useRef(new Map<string, { text: string; vehicles?: Vehicle[] }>());
 
   const t = STRINGS[language];
 
@@ -833,6 +836,19 @@ export const ChatWidget: React.FC = () => {
     }
   }, [language]);
 
+  const publishAssistantReply = useCallback((messageId: string, reply: { text: string; vehicles?: Vehicle[] }) => {
+    const previous = replySlotsRef.current.get(messageId);
+    const merged = mergeInventoryReply(previous, reply);
+    const kept = previous !== undefined && merged === previous;
+    replySlotsRef.current.set(messageId, { text: merged.text, vehicles: merged.vehicles });
+    setMessages((prev) => prev.map((message) => (
+      message.id === messageId
+        ? { ...message, text: merged.text, vehicles: merged.vehicles, isThinking: false }
+        : message
+    )));
+    return { text: merged.text, vehicles: merged.vehicles, kept };
+  }, []);
+
   const noteSpeechUnavailable = useCallback(() => {
     if (speechUnavailableNotedRef.current) return;
     speechUnavailableNotedRef.current = true;
@@ -963,31 +979,21 @@ export const ChatWidget: React.FC = () => {
 
     composeReply(query)
       .then((reply) => {
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMsgId
-              ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
-              : message
-          )
-        );
-        speakMicReply(reply.text, reply.vehicles);
+        const shown = publishAssistantReply(assistantMsgId, reply);
+        if (!shown.kept) speakMicReply(shown.text, shown.vehicles);
       })
       .catch(() => {
         const text =
           language === 'en'
             ? 'I could not reach the showroom just now. Please try again.'
             : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
-          )
-        );
-        speakMicReply(text);
+        const shown = publishAssistantReply(assistantMsgId, { text });
+        if (!shown.kept) speakMicReply(shown.text);
       })
       .finally(() => {
         speechCompletingRef.current = false;
       });
-  }, [composeReply, language, speakMicReply]);
+  }, [composeReply, language, publishAssistantReply, speakMicReply]);
 
   const startBrowserSpeech = useCallback(() => {
     if (isListeningRef.current || speechCompletingRef.current) return;
@@ -1319,27 +1325,18 @@ export const ChatWidget: React.FC = () => {
       const spoken = userQuery || effectiveText;
       composeReply(spoken)
         .then((reply) => {
-          activeModelTranscriptRef.current = reply.text;
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantMsgId
-                ? { ...message, text: reply.text, vehicles: reply.vehicles, isThinking: false }
-                : message
-            )
-          );
-          speakMicReply(reply.text, reply.vehicles);
+          const shown = publishAssistantReply(assistantMsgId, reply);
+          activeModelTranscriptRef.current = shown.text;
+          if (!shown.kept) speakMicReply(shown.text, shown.vehicles);
         })
         .catch(() => {
           const text =
             language === 'en'
               ? 'I could not reach the showroom just now. Please try again.'
               : 'Je ne peux pas joindre la concession pour le moment. Réessayez dans un instant.';
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantMsgId ? { ...message, text, isThinking: false } : message
-            )
-          );
-          speakMicReply(text);
+          const shown = publishAssistantReply(assistantMsgId, { text });
+          activeModelTranscriptRef.current = shown.text;
+          if (!shown.kept) speakMicReply(shown.text);
         });
       setLiveTranscript('');
       return;
@@ -1385,7 +1382,7 @@ export const ChatWidget: React.FC = () => {
     }, 4500);
 
     setLiveTranscript('');
-  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, speakMicReply, voiceStatus]);
+  }, [cleanStopRecording, composeReply, dealer.name, language, liveTranscript, publishAssistantReply, speakMicReply, voiceStatus]);
 
   // Pointer Down on Mic button (supports press-and-hold OR simple click)
   const handleMicPointerDown = (e: React.PointerEvent) => {
@@ -1466,28 +1463,27 @@ export const ChatWidget: React.FC = () => {
   // Handle typed text messages
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const query = inputText.trim();
+    const query = inputValueRef.current.trim();
     if (!query) return;
+    inputValueRef.current = '';
+    setInputText('');
 
+    const stamp = Date.now();
     const userMessage: ChatMessage = {
-      id: 'msg-u-' + Date.now(),
+      id: 'msg-u-' + stamp,
       sender: 'user',
       text: query,
     };
+    const assistantId = 'msg-a-' + stamp;
 
-    setMessages((prev) => [...prev, userMessage]);
-    setInputText('');
-
-    const reply = await composeReply(query);
     setMessages((prev) => [
       ...prev,
-      {
-        id: 'msg-a-' + Date.now(),
-        sender: 'assistant',
-        text: reply.text,
-        vehicles: reply.vehicles,
-      },
+      userMessage,
+      { id: assistantId, sender: 'assistant', text: '', isThinking: true },
     ]);
+
+    const reply = await composeReply(query);
+    publishAssistantReply(assistantId, reply);
   };
 
   // 3-second quick microphone test tool for diagnostics
@@ -1992,21 +1988,30 @@ export const ChatWidget: React.FC = () => {
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
               <button
                 type="button"
-                onClick={() => setInputText(t.quickRedSuv)}
+                onClick={() => {
+                  inputValueRef.current = t.quickRedSuv;
+                  setInputText(t.quickRedSuv);
+                }}
                 className="whitespace-nowrap px-2.5 py-1 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer"
               >
                 {t.quickRedSuv}
               </button>
               <button
                 type="button"
-                onClick={() => setInputText(t.quickAwd)}
+                onClick={() => {
+                  inputValueRef.current = t.quickAwd;
+                  setInputText(t.quickAwd);
+                }}
                 className="whitespace-nowrap px-2.5 py-1 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer"
               >
                 {t.quickAwd}
               </button>
               <button
                 type="button"
-                onClick={() => setInputText(t.quickBudget)}
+                onClick={() => {
+                  inputValueRef.current = t.quickBudget;
+                  setInputText(t.quickBudget);
+                }}
                 className="whitespace-nowrap px-2.5 py-1 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer"
               >
                 {t.quickBudget}
@@ -2019,7 +2024,10 @@ export const ChatWidget: React.FC = () => {
                 <input
                   type="text"
                   value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
+                  onChange={(e) => {
+                    inputValueRef.current = e.target.value;
+                    setInputText(e.target.value);
+                  }}
                   placeholder={
                     voiceStatus === 'listening'
                       ? t.inputPlaceholderListening
