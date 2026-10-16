@@ -7,8 +7,12 @@ import {
   fetchDealerProfile,
   canonicalBrandLabel,
   fetchDealerVehicles,
+  filterCachedVehicles,
   localFactualReply,
+  makesInQuestion,
+  mergeVehiclesById,
   prototypeInventory,
+  vehicleSearchPlan,
 } from './dealerPlatform';
 import { Vehicle } from './types/inventory';
 
@@ -100,7 +104,50 @@ export function inventorySummary(count: number, lang: 'fr' | 'en'): string {
   return `J'ai trouvé ${count} véhicules. Vous pouvez affiner la recherche par année, fourchette de prix ou modèle.`;
 }
 
-export function inventoryReplyText(query: string, count: number, lang: 'fr' | 'en'): string {
+function joinMakes(makes: string[], lang: 'fr' | 'en', conjunction: 'and' | 'or'): string {
+  const word = lang === 'en' ? (conjunction === 'or' ? 'or' : 'and') : conjunction === 'or' ? 'ou' : 'et';
+  if (makes.length <= 1) return makes[0] || '';
+  if (makes.length === 2) return `${makes[0]} ${word} ${makes[1]}`;
+  return `${makes.slice(0, -1).join(', ')} ${word} ${makes[makes.length - 1]}`;
+}
+
+function makesInResults(query: string, vehicles: Vehicle[] | undefined): string[] {
+  const asked = makesInQuestion(query);
+  if (!vehicles || vehicles.length === 0) return asked;
+  const present = new Set(vehicles.map((vehicle) => vehicle.make.toLowerCase()));
+  const matched = asked.filter((make) => present.has(make.toLowerCase()));
+  return matched.length > 0 ? matched : asked;
+}
+
+export function inventoryReplyText(
+  query: string,
+  count: number,
+  lang: 'fr' | 'en',
+  vehicles?: Vehicle[],
+): string {
+  const asked = makesInQuestion(query);
+  if (asked.length > 1) {
+    if (count > 0) {
+      const names = joinMakes(makesInResults(query, vehicles), lang, 'and');
+      if (count > 3) {
+        return lang === 'en'
+          ? `I found ${count} vehicles, including ${names}. You can narrow this by year, price range, or model.`
+          : `J'ai trouvé ${count} véhicules, dont ${names}. Vous pouvez affiner la recherche par année, fourchette de prix ou modèle.`;
+      }
+      if (count === 1) {
+        return lang === 'en'
+          ? `Here is the available ${names} vehicle matching your search:`
+          : `Voici le véhicule ${names} disponible correspondant à votre recherche :`;
+      }
+      return lang === 'en'
+        ? `Here are the ${count} available vehicles matching your search: ${names}.`
+        : `Voici les ${count} véhicules disponibles correspondant à votre recherche : ${names}.`;
+    }
+    const names = joinMakes(asked, lang, 'or');
+    return lang === 'en'
+      ? `I don't see any ${names} in the current inventory.`
+      : `Je ne vois aucun ${names} dans l'inventaire actuel.`;
+  }
   if (count > 3) return inventorySummary(count, lang);
   if (count === 1) {
     return lang === 'en'
@@ -154,7 +201,79 @@ export async function loadInventory(searchText: string): Promise<InventoryRespon
   }
 }
 
+let dealerInventoryCache: Vehicle[] | null = null;
+let dealerInventoryPreload: Promise<Vehicle[] | null> | null = null;
+let dealerInventoryRefresh: Promise<void> | null = null;
+let dealerInventoryRefreshed = false;
+
+/**
+ * Full dealer list for the open chat. The list payload carries photo URLs only.
+ * This does not request each vehicle's gallery.
+ */
+async function fetchPreloadInventory(): Promise<Vehicle[]> {
+  if (directPlatform) return fetchDealerVehicles('', DEFAULT_DEALER_ID);
+  const response = await fetch('/api/platform/vehicles');
+  if (!response.ok) throw new Error(`Inventory ${response.status}`);
+  const payload = (await response.json()) as InventoryResponse;
+  if (!Array.isArray(payload.vehicles)) throw new Error('Inventory payload missing vehicles');
+  return payload.vehicles;
+}
+
+/** Kick off inventory loading when the chat opens. Does not block the greeting. */
+export function preloadDealerInventory(): void {
+  if (dealerInventoryPreload || dealerInventoryCache) return;
+  console.info('[lambert-chat] inventory preload started');
+  dealerInventoryPreload = fetchPreloadInventory()
+    .then((vehicles) => {
+      dealerInventoryCache = vehicles;
+      console.info('[lambert-chat] inventory preload ready', vehicles.length);
+      return vehicles;
+    })
+    .catch((error) => {
+      console.warn('[lambert-chat] inventory preload failed', error);
+      dealerInventoryPreload = null;
+      return null;
+    });
+}
+
+async function cachedDealerInventory(): Promise<Vehicle[] | null> {
+  if (dealerInventoryPreload) await dealerInventoryPreload;
+  return dealerInventoryCache;
+}
+
+function refreshDealerInventory(): void {
+  if (dealerInventoryRefresh || dealerInventoryRefreshed) return;
+  dealerInventoryRefreshed = true;
+  dealerInventoryRefresh = fetchPreloadInventory()
+    .then((vehicles) => {
+      dealerInventoryCache = vehicles;
+    })
+    .catch((error) => {
+      console.warn('[lambert-chat] inventory refresh failed', error);
+      dealerInventoryRefreshed = false;
+    })
+    .finally(() => {
+      dealerInventoryRefresh = null;
+    });
+}
+
 export async function loadVehicles(searchText: string): Promise<Vehicle[]> {
+  const plan = vehicleSearchPlan(searchText);
+  const makes = makesInQuestion(searchText);
+  const cached = makes.length > 0 ? await cachedDealerInventory() : null;
+  if (cached) {
+    refreshDealerInventory();
+    if (plan.mode === 'makes') {
+      return mergeVehiclesById(plan.terms.map((term) => filterCachedVehicles(cached, term)));
+    }
+    return filterCachedVehicles(cached, searchText);
+  }
+  if (plan.mode === 'makes') {
+    const groups = await Promise.all(
+      plan.terms.map(async (term) => (await loadInventory(term)).vehicles),
+    );
+    return mergeVehiclesById(groups);
+  }
   const inventory = await loadInventory(searchText);
   return inventory.vehicles;
 }
@@ -188,7 +307,7 @@ async function inventoryFallbackText(message: string, lang: 'fr' | 'en'): Promis
   try {
     const vehicles = await loadVehicles(message);
     if (vehicles.length > 0 || isVehicleSearchQuery(message)) {
-      return inventoryReplyText(message, vehicles.length, lang);
+      return inventoryReplyText(message, vehicles.length, lang, vehicles);
     }
   } catch (error) {
     console.warn('Inventory fallback failed', error);
@@ -209,7 +328,7 @@ export async function answerDealer(message: string, lang: 'fr' | 'en'): Promise<
 
   if (directPlatform && isVehicleSearchQuery(message)) {
     const vehicles = await loadVehicles(message);
-    return inventoryReplyText(message, vehicles.length, lang);
+    return inventoryReplyText(message, vehicles.length, lang, vehicles);
   }
 
   try {

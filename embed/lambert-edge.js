@@ -1,4 +1,4 @@
-const SOURCE_COMMIT = "ae4d0db63b26f40bd311abb58b65df46823e9332";
+const SOURCE_COMMIT = "2678ef3258f9fe808987c2913e32da1cb907b7f9";
 const SOURCE_ROOT = `https://raw.githubusercontent.com/NeuroDivers/ai-studio---chat-widget---autoelite/${SOURCE_COMMIT}`;
 const CHAT_URL = `${SOURCE_ROOT}/embed/lambert-chat.js`;
 const CHAT_SCRIPT_SRC = `/lambert-chat.js?v=${SOURCE_COMMIT.slice(0, 7)}`;

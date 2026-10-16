@@ -29,6 +29,7 @@ import {
   inventorySummary,
   answerDealer,
   directPlatform,
+  preloadDealerInventory,
   LiveVoiceSession,
 } from '../portalApi';
 import { AudioCaptureController, AudioPlaybackController } from '../utils/audio';
@@ -376,6 +377,27 @@ export function languageFromSite(): Language {
   return 'fr';
 }
 
+/**
+ * Put the first vehicle card in view. If the reply already sits directly above
+ * the cards and both fit, keep that sentence readable. Otherwise pin the first card.
+ */
+function scrollResultsToFirstCard(thread: HTMLElement, anchor: HTMLElement): void {
+  const paddingTop = Number.parseFloat(window.getComputedStyle(thread).paddingTop) || 0;
+  const threadTop = thread.getBoundingClientRect().top;
+  const anchorTop = anchor.getBoundingClientRect().top;
+  const card = anchor.querySelector('[data-lambert-result-cards]')?.firstElementChild;
+  const replyHeight = card instanceof HTMLElement
+    ? card.getBoundingClientRect().top - anchorTop
+    : anchor.getBoundingClientRect().height;
+  const cardHeight = card instanceof HTMLElement ? card.getBoundingClientRect().height : 0;
+  const room = thread.clientHeight - paddingTop;
+  const showReplyWithCard = !(card instanceof HTMLElement) || replyHeight + Math.min(cardHeight, 160) <= room;
+  const targetTop = showReplyWithCard || !(card instanceof HTMLElement)
+    ? anchorTop
+    : card.getBoundingClientRect().top;
+  thread.scrollTop += targetTop - threadTop - paddingTop;
+}
+
 export const ChatWidget: React.FC = () => {
   const dealer = useDealer();
   const [isOpen, setIsOpen] = useState<boolean>(false);
@@ -421,6 +443,8 @@ export const ChatWidget: React.FC = () => {
   const activeModelTranscriptRef = useRef<string>('');
   const currentAssistantMsgIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const scrolledResultKeyRef = useRef<string>('');
   const isListeningRef = useRef<boolean>(false);
   const speechTranscriptRef = useRef<string>('');
   /** Finalized text from earlier recognition sessions in this press. Interims are not included. */
@@ -453,6 +477,12 @@ export const ChatWidget: React.FC = () => {
       )
     );
   }, [dealer.name, language, selectedVoice]);
+
+  // Inventory starts loading when the panel opens. The greeting does not wait on it.
+  useEffect(() => {
+    if (!isOpen) return;
+    preloadDealerInventory();
+  }, [isOpen]);
 
   // Warm the invisible Turnstile widget. The iframe stays in the light DOM.
   useEffect(() => {
@@ -673,11 +703,31 @@ export const ChatWidget: React.FC = () => {
     setIsPlayingIntro(false);
   }, [isPlayingIntro, language, selectedVoice]);
 
-  // Scroll to bottom on new messages
+  // Vehicle results stay at the first card. Other messages still show the newest bubble.
   useEffect(() => {
-    if (isOpen && !selectedVehicle) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!isOpen || selectedVehicle) return;
+    const thread = threadRef.current;
+    const last = messages[messages.length - 1];
+    const hasResults = Boolean(
+      last &&
+      last.sender === 'assistant' &&
+      !last.isThinking &&
+      last.vehicles &&
+      last.vehicles.length > 0,
+    );
+    if (hasResults && thread && last) {
+      const key = `${last.id}:${last.vehicles?.length}:${last.text}`;
+      if (scrolledResultKeyRef.current === key) return;
+      const frame = window.requestAnimationFrame(() => {
+        scrolledResultKeyRef.current = key;
+        const anchors = thread.querySelectorAll('[data-lambert-results-anchor]');
+        const anchor = anchors[anchors.length - 1];
+        if (anchor instanceof HTMLElement) scrollResultsToFirstCard(thread, anchor);
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
+    scrolledResultKeyRef.current = '';
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isOpen, selectedVehicle, liveTranscript, voiceStatus]);
 
   // Lock body scroll on mobile
@@ -754,7 +804,7 @@ export const ChatWidget: React.FC = () => {
       if (isVehicleSearchQuery(query)) {
         const results = await loadVehicles(query);
         return {
-          text: inventoryReplyText(query, results.length, language),
+          text: inventoryReplyText(query, results.length, language, results),
           vehicles: results.length > 0 ? results : undefined,
         };
       }
@@ -763,7 +813,7 @@ export const ChatWidget: React.FC = () => {
         const results = await loadVehicles(query);
         if (results.length > 0) {
           return {
-            text: inventoryReplyText(query, results.length, language),
+            text: inventoryReplyText(query, results.length, language, results),
             vehicles: results,
           };
         }
@@ -1527,6 +1577,7 @@ export const ChatWidget: React.FC = () => {
       {!isOpen && (
         <button
           onClick={() => {
+            preloadDealerInventory();
             setIsOpen(true);
             playGreetingIntro();
           }}
@@ -1696,6 +1747,7 @@ export const ChatWidget: React.FC = () => {
 
           {/* Scrollable Conversation messages list */}
           <div
+            ref={threadRef}
             data-lambert-chat-thread=""
             className={
               showExpandedInventory
@@ -1706,6 +1758,11 @@ export const ChatWidget: React.FC = () => {
             {messages.map((msg) => (
               <div
                 key={msg.id}
+                data-lambert-results-anchor={
+                  msg.sender === 'assistant' && msg.vehicles && msg.vehicles.length > 0 && !msg.isThinking
+                    ? ''
+                    : undefined
+                }
                 className={`flex flex-col ${
                   msg.sender === 'user' ? 'items-end' : 'items-start'
                 }`}
@@ -1762,7 +1819,7 @@ export const ChatWidget: React.FC = () => {
                     <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider px-1">
                       {t.vehicleResults(msg.vehicles.length)}
                     </div>
-                    <div className="grid grid-cols-1 gap-3">
+                    <div className="grid grid-cols-1 gap-3" data-lambert-result-cards="">
                       {msg.vehicles.map((v) => (
                         <VehicleCard
                           key={v.id}
