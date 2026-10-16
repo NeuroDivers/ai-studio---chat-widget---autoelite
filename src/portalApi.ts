@@ -11,6 +11,7 @@ import {
   localFactualReply,
   makesInQuestion,
   mergeVehiclesById,
+  parseVehicleQuery,
   prototypeInventory,
   vehicleSearchPlan,
 } from './dealerPlatform';
@@ -175,7 +176,7 @@ export function inventoryReplyText(
  * The server calls GET /api/ai/dealers/:id/vehicles and returns only those rows.
  * The local prototype list is used only when that platform call fails.
  */
-export const directPlatform = import.meta.env.VITE_DIRECT_PLATFORM === 'true';
+export const directPlatform = import.meta.env != null && import.meta.env.VITE_DIRECT_PLATFORM === 'true';
 
 export async function loadInventory(searchText: string): Promise<InventoryResponse> {
   try {
@@ -205,6 +206,46 @@ let dealerInventoryCache: Vehicle[] | null = null;
 let dealerInventoryPreload: Promise<Vehicle[] | null> | null = null;
 let dealerInventoryRefresh: Promise<void> | null = null;
 let dealerInventoryRefreshed = false;
+let dealerInventoryEpoch = 0;
+let dealerInventoryCommit = 0;
+let dealerInventorySession = 0;
+const inflightVehicleLoads = new Map<string, Promise<Vehicle[]>>();
+
+/**
+ * A later successful list wins. An older or empty result must not replace it.
+ * An empty list is remembered only when nothing usable is already stored.
+ */
+function rememberInventory(epoch: number, vehicles: Vehicle[]): void {
+  if (epoch < dealerInventoryCommit) return;
+  if (vehicles.length === 0 && dealerInventoryCache && dealerInventoryCache.length > 0) return;
+  dealerInventoryCommit = epoch;
+  dealerInventoryCache = vehicles;
+}
+
+export function resetDealerInventoryForTests(): void {
+  dealerInventoryCache = null;
+  dealerInventoryPreload = null;
+  dealerInventoryRefresh = null;
+  dealerInventoryRefreshed = false;
+  dealerInventoryEpoch = 0;
+  dealerInventoryCommit = 0;
+  dealerInventorySession += 1;
+  inflightVehicleLoads.clear();
+}
+
+/**
+ * Keep a shown vehicle list when a slower empty reply finishes afterwards.
+ * One user message keeps the successful reply.
+ */
+export function mergeInventoryReply<T extends { text: string; vehicles?: Vehicle[] }>(
+  current: T | undefined,
+  incoming: T,
+): T {
+  const shown = current?.vehicles?.length ?? 0;
+  const next = incoming.vehicles?.length ?? 0;
+  if (shown > 0 && next === 0) return current as T;
+  return incoming;
+}
 
 /**
  * Full dealer list for the open chat. The list payload carries photo URLs only.
@@ -221,32 +262,53 @@ async function fetchPreloadInventory(): Promise<Vehicle[]> {
 
 /** Kick off inventory loading when the chat opens. Does not block the greeting. */
 export function preloadDealerInventory(): void {
-  if (dealerInventoryPreload || dealerInventoryCache) return;
+  if (dealerInventoryPreload) return;
+  if (dealerInventoryCache && dealerInventoryCache.length > 0) return;
+  const epoch = ++dealerInventoryEpoch;
+  const session = dealerInventorySession;
   console.info('[lambert-chat] inventory preload started');
-  dealerInventoryPreload = fetchPreloadInventory()
+  const pending = fetchPreloadInventory()
     .then((vehicles) => {
-      dealerInventoryCache = vehicles;
+      if (session !== dealerInventorySession) return vehicles;
+      rememberInventory(epoch, vehicles);
       console.info('[lambert-chat] inventory preload ready', vehicles.length);
       return vehicles;
     })
     .catch((error) => {
       console.warn('[lambert-chat] inventory preload failed', error);
-      dealerInventoryPreload = null;
       return null;
+    })
+    .finally(() => {
+      if (dealerInventoryPreload === pending) dealerInventoryPreload = null;
     });
+  dealerInventoryPreload = pending;
 }
 
+/**
+ * Brand questions wait for the in-flight preload. An empty list is not a catalog:
+ * callers fall through to the network instead of reporting zero matches.
+ */
 async function cachedDealerInventory(): Promise<Vehicle[] | null> {
-  if (dealerInventoryPreload) await dealerInventoryPreload;
+  const pending = dealerInventoryPreload;
+  if (pending) {
+    const vehicles = await pending;
+    if (vehicles && vehicles.length > 0) return vehicles;
+    if (dealerInventoryCache && dealerInventoryCache.length > 0) return dealerInventoryCache;
+    return null;
+  }
+  if (!dealerInventoryCache || dealerInventoryCache.length === 0) return null;
   return dealerInventoryCache;
 }
 
 function refreshDealerInventory(): void {
   if (dealerInventoryRefresh || dealerInventoryRefreshed) return;
   dealerInventoryRefreshed = true;
+  const epoch = ++dealerInventoryEpoch;
+  const session = dealerInventorySession;
   dealerInventoryRefresh = fetchPreloadInventory()
     .then((vehicles) => {
-      dealerInventoryCache = vehicles;
+      if (session !== dealerInventorySession) return;
+      rememberInventory(epoch, vehicles);
     })
     .catch((error) => {
       console.warn('[lambert-chat] inventory refresh failed', error);
@@ -257,25 +319,53 @@ function refreshDealerInventory(): void {
     });
 }
 
-export async function loadVehicles(searchText: string): Promise<Vehicle[]> {
-  const plan = vehicleSearchPlan(searchText);
+/** One named make with no other words searches that make. Prices stay on the original question. */
+function networkSearchText(searchText: string): string {
   const makes = makesInQuestion(searchText);
-  const cached = makes.length > 0 ? await cachedDealerInventory() : null;
-  if (cached) {
-    refreshDealerInventory();
-    if (plan.mode === 'makes') {
-      return mergeVehiclesById(plan.terms.map((term) => filterCachedVehicles(cached, term)));
-    }
-    return filterCachedVehicles(cached, searchText);
-  }
+  if (makes.length !== 1) return searchText;
+  const parsed = parseVehicleQuery(searchText);
+  if (parsed.maxPrice !== undefined || parsed.minPrice !== undefined) return searchText;
+  if (parsed.search.toLowerCase() === makes[0].toLowerCase()) return makes[0].toLowerCase();
+  return searchText;
+}
+
+async function searchInventory(searchText: string): Promise<Vehicle[]> {
+  const plan = vehicleSearchPlan(searchText);
   if (plan.mode === 'makes') {
     const groups = await Promise.all(
       plan.terms.map(async (term) => (await loadInventory(term)).vehicles),
     );
     return mergeVehiclesById(groups);
   }
-  const inventory = await loadInventory(searchText);
+  const inventory = await loadInventory(networkSearchText(searchText));
   return inventory.vehicles;
+}
+
+async function loadVehiclesOnce(searchText: string): Promise<Vehicle[]> {
+  const plan = vehicleSearchPlan(searchText);
+  const makes = makesInQuestion(searchText);
+  if (makes.length > 0) {
+    const cached = await cachedDealerInventory();
+    if (cached && cached.length > 0) {
+      refreshDealerInventory();
+      const filtered = plan.mode === 'makes'
+        ? mergeVehiclesById(plan.terms.map((term) => filterCachedVehicles(cached, term)))
+        : filterCachedVehicles(cached, searchText);
+      if (filtered.length > 0) return filtered;
+    }
+  }
+  return searchInventory(searchText);
+}
+
+export async function loadVehicles(searchText: string): Promise<Vehicle[]> {
+  const key = searchText.trim().toLowerCase();
+  const existing = inflightVehicleLoads.get(key);
+  if (existing) return existing;
+  const pending = loadVehiclesOnce(searchText).finally(() => {
+    if (inflightVehicleLoads.get(key) === pending) inflightVehicleLoads.delete(key);
+  });
+  inflightVehicleLoads.set(key, pending);
+  return pending;
 }
 
 export async function loadDealerContext(): Promise<DealerProfile> {
